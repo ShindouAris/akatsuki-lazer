@@ -1,8 +1,0 @@
-.env*
-.pre-commit-config.yaml
-*.example
-venv/
-.vscode/
-LICENSE
-CODEOWNERS
-logs.log
