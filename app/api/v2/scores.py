@@ -47,6 +47,15 @@ def _mode_to_string(mode: GameMode) -> str:
     }.get(mode, "osu")
 
 
+def _normalize_to_utc(value: datetime | None) -> datetime | None:
+    """Normalize incoming datetimes to UTC-aware values."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _score_to_response(
     score: Score,
     include_user: bool = True,
@@ -238,7 +247,6 @@ async def submit_score(
     # Note: Official implementation doesn't expire tokens, so we skip expiry check
 
     # Fetch beatmap (should already exist from token creation, but verify)
-    print(f"Score: {score_data}")
     service = BeatmapService(db)
     osu_file_path: str | None = None
     try:
@@ -311,7 +319,14 @@ async def submit_score(
                     final_pp = calculated_pp
 
     # Create score
-    ended_at = score_data.ended_at if score_data.ended_at else datetime.now(UTC)
+    started_at = _normalize_to_utc(score_data.started_at) or _normalize_to_utc(token.created_at)
+    if started_at is None:
+        started_at = datetime.now(UTC)
+
+    ended_at = _normalize_to_utc(score_data.ended_at) or datetime.now(UTC)
+    if ended_at < started_at:
+        ended_at = started_at
+
     score = Score(
         user_id=user.id,
         beatmap_id=beatmap_id,
@@ -325,7 +340,7 @@ async def submit_score(
         passed=score_data.passed,
         ranked=ranked,
         preserve=score_data.passed,  # Preserve passing scores like official
-        started_at=token.created_at,  # Use token creation as start time like official
+        started_at=started_at,
         ended_at=ended_at,
         build_id=token.build_id,
     )

@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from fastapi import Request
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
+from fastapi.websockets import WebSocketState
 
 from app.api.deps import CurrentUser
 
@@ -52,7 +53,11 @@ async def notifications_websocket(websocket: WebSocket) -> None:
         while True:
             try:
                 # Wait for messages with timeout, send keepalive if needed
-                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    # WS is vanished into the socket abyss, stop trying to read
+                    break
+                
+                message = await websocket.receive()
 
                 if "text" in message:
                     try:
@@ -71,6 +76,9 @@ async def notifications_websocket(websocket: WebSocket) -> None:
                             )
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid JSON in notifications: {message['text']!r}")
+                    except WebSocketDisconnect:
+                        logger.info("Notifications WebSocket disconnected during message handling")
+                        break
 
             except asyncio.TimeoutError:
                 # Send a keepalive/ping to keep connection alive
