@@ -172,6 +172,183 @@ async def test_get_user_by_id(
 
 
 @pytest.mark.asyncio
+async def test_register_user_success_root(client: AsyncClient) -> None:
+    """Test registration endpoint at root path."""
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "newuser",
+            "user[user_email]": "newuser@example.com",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+
+
+@pytest.mark.asyncio
+async def test_register_user_success_v2(client: AsyncClient) -> None:
+    """Test registration endpoint at versioned path."""
+    response = await client.post(
+        "/api/v2/users",
+        data={
+            "user[username]": "newuserv2",
+            "user[user_email]": "newuserv2@example.com",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {}
+
+
+@pytest.mark.asyncio
+async def test_register_user_duplicate_username(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test username duplication returns expected form_error shape."""
+    existing = User(
+        username="takenname",
+        email="existing@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    for mode in GameMode:
+        db_session.add(UserStatistics(user_id=existing.id, mode=mode))
+    await db_session.commit()
+
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "takenname",
+            "user[user_email]": "newmail@example.com",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "form_error": {
+            "user": {
+                "username": ["Username already taken"],
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_register_user_invalid_email(client: AsyncClient) -> None:
+    """Test invalid email returns exact field error payload."""
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "mailtest",
+            "user[user_email]": "invalid-email",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "form_error": {
+            "user": {
+                "user_email": ["Email is invalid"],
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_register_user_short_password(client: AsyncClient) -> None:
+    """Test short password returns exact field error payload."""
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "pwdtest",
+            "user[user_email]": "pwdtest@example.com",
+            "user[password]": "123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "form_error": {
+            "user": {
+                "password": ["Password too short"],
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_register_user_duplicate_email(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test duplicate email maps to expected field message."""
+    existing = User(
+        username="emailowner",
+        email="dup@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    for mode in GameMode:
+        db_session.add(UserStatistics(user_id=existing.id, mode=mode))
+    await db_session.commit()
+
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "freshusername",
+            "user[user_email]": "dup@example.com",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "form_error": {
+            "user": {
+                "user_email": ["Email is invalid"],
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_register_user_generic_fallback_error(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test generic error payload for unexpected registration failures."""
+
+    async def failing_create_user(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.api.v2.users.create_user", failing_create_user)
+
+    response = await client.post(
+        "/users",
+        data={
+            "user[username]": "fallbackuser",
+            "user[user_email]": "fallback@example.com",
+            "user[password]": "strongpw",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"error": "Something went wrong"}
+
+
+@pytest.mark.asyncio
 async def test_beatmapset_search_empty(client: AsyncClient) -> None:
     """Test beatmapset search with no results."""
     response = await client.get("/api/v2/beatmapsets/search")

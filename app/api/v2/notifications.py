@@ -76,6 +76,14 @@ async def notifications_websocket(websocket: WebSocket) -> None:
                 # Send a keepalive/ping to keep connection alive
                 pass
 
+            except WebSocketDisconnect:
+                logger.info("Notifications WebSocket disconnected")
+                break
+
+            except Exception as e:
+                logger.exception(f"Error in notifications WebSocket: {e}")
+                break
+
     except WebSocketDisconnect:
         logger.info("Notifications WebSocket disconnected")
     except Exception as e:

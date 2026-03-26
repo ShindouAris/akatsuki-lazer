@@ -3,15 +3,18 @@
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from typing import Union
 
 from fastapi import APIRouter
 from fastapi import Form
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from fastapi import status
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import DbSession
+from app.api.v2.schemas import UserResponse
 from app.core.security import create_token_pair
 from app.core.security import decode_token
 from app.core.security import verify_password
@@ -50,9 +53,13 @@ async def get_token(
     """
     if grant_type == "password":
         if not username or not password:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username and password required for password grant",
+                content={
+                    "error": "invalid_request",
+                    "hint": "Username and password are required for password grant",
+                    "message": "Missing username or password",
+                }
             )
 
         # Find user by username or email
@@ -64,16 +71,23 @@ async def get_token(
         user = result.scalar_one_or_none()
 
         if not user or not verify_password(password, user.password_hash):
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password",
+                content={
+                    "error": "invalid_grant",
+                    "hint": "Invalid username or password",
+                    "message": "Invalid credentials",
+                }
             )
 
         if user.is_restricted:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is restricted",
-            )
+                content={
+                    "error": "access_denied",
+                    "hint": "User account is restricted",
+                    "message": "User is restricted from accessing the service",
+                })
 
         # Parse scopes
         scopes = scope.split() if scope else ["*"]

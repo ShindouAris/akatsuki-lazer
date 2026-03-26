@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from .logger import LOGGING_CONFIG, setup_logger
 
 from fastapi import FastAPI
 from fastapi import Request
@@ -15,6 +16,7 @@ from app.api.hubs.multiplayer import router as multiplayer_router
 from app.api.hubs.spectator import router as spectator_router
 from app.api.v2 import router as api_v2_router
 from app.api.v2.oauth import router as oauth_router
+from app.api.v2.users import root_registration_router
 from app.core.config import get_settings
 from app.core.database import close_db
 from app.core.database import init_db
@@ -22,12 +24,6 @@ from app.services.hub_state import close_hub_state_service
 from app.services.hub_state import get_hub_state_service
 
 settings = get_settings()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.getLevelName(settings.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +72,9 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_v2_router)
+
+# Include root registration endpoint for osu! compatibility (/users)
+app.include_router(root_registration_router, tags=["Users"])
 
 # Also include OAuth at root level (osu! client expects /oauth/token, not /api/v2/oauth/token)
 app.include_router(oauth_router, tags=["OAuth"])
@@ -163,6 +162,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # Main entry point
 def create_app() -> FastAPI:
     """Create the ASGI application."""
+    setup_logger()
     return app
 
 
@@ -174,5 +174,5 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
-        log_level=settings.log_level.lower(),
+        log_config=LOGGING_CONFIG
     )
