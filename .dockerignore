@@ -1,0 +1,9 @@
+tests/
+uv.lock
+
+__pycache__/
+documentation/
+.venv
+.logs
+.pytest_cache/
+.idea/
