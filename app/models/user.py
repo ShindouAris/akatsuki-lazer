@@ -238,3 +238,60 @@ class OAuthToken(Base):
     def scope_list(self) -> list[str]:
         """Get scopes as a list."""
         return self.scopes.split() if self.scopes else []
+
+
+class UserBeatmapFavorite(Base):
+    """User favorite beatmapsets."""
+
+    __tablename__ = "user_beatmap_favorites"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    beatmapset_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("beatmapsets.id", ondelete="CASCADE"), primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC),
+    )
+
+
+class UserActivity(Base):
+    """User activity log for tracking rank changes and achievements."""
+
+    __tablename__ = "user_activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True,
+    )
+    type: Mapped[str] = mapped_column(String(32), index=True)  # "rank", "achievement", etc.
+    beatmap_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("beatmaps.id", ondelete="SET NULL"), nullable=True,
+    )
+    mode: Mapped[GameMode] = mapped_column(Enum(GameMode), default=GameMode.OSU)
+    data: Mapped[str] = mapped_column(Text, default="{}")  # JSON for additional info
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True, default=lambda: datetime.now(UTC),
+    )
+
+
+class KudosuHistory(Base):
+    """Kudosu voting history."""
+
+    __tablename__ = "kudosu_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True,
+    )
+    beatmap_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("beatmaps.id", ondelete="SET NULL"), nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(16))  # "give", "reset", "deny"
+    amount: Mapped[int] = mapped_column(Integer)  # Can be negative for reset/deny
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Discussion post ID
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True, default=lambda: datetime.now(UTC),
+    )

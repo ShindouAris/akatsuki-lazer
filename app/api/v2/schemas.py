@@ -255,3 +255,98 @@ class MultiplayerRoomCreateRequest(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     playlist: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# User beatmap related schemas
+class SoloScoreResponse(BaseModel):
+    """Solo score response (full score with related objects)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    beatmap_id: int
+    ruleset_id: int
+    total_score: int
+    accuracy: float
+    pp: float | None = None
+    max_combo: int
+    rank: str
+    passed: bool
+    mods: list[ModResponse] = Field(default_factory=list)
+    statistics: dict[str, int] = Field(default_factory=dict)
+    ended_at: datetime | None = None
+    has_replay: bool = False
+    user: UserCompact | None = None
+    beatmap: BeatmapCompact | None = None
+
+
+class UserMostPlayedResponse(BaseModel):
+    """User most played beatmap response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    beatmap_id: int
+    beatmapset_id: int
+    count: int  # Number of times played
+    beatmap: BeatmapCompact | None = None
+    beatmapset: BeatmapsetCompact | None = None
+
+
+class UserActivityResponse(BaseModel):
+    """User activity response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    type: str  # "rank", "achievement", etc.
+    beatmap_id: int | None = None
+    mode: str = "osu"
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    beatmap: BeatmapCompact | None = None
+
+
+class KudosuHistoryResponse(BaseModel):
+    """Kudosu history response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    beatmap_id: int | None = None
+    action: str  # "give", "reset", "deny"
+    amount: int
+    comment: str | None = None
+    post_id: int | None = None
+    created_at: datetime
+    beatmap: BeatmapCompact | None = None
+
+
+class RankingUserEntryResponse(BaseModel):
+    """Single user entry in a ranking list."""
+
+    rank: int
+    user: UserCompact
+    pp: float = 0.0
+    ranked_score: int = 0
+    country_code: str = "XX"
+
+
+class RankingsResponse(BaseModel):
+    """Paginated rankings response."""
+
+    ranking: list[RankingUserEntryResponse] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    per_page: int = 50
+    kind: str = "performance"
+
+
+class UserScoreAggregateResponse(BaseModel):
+    """Aggregate ranking info for a user's score."""
+
+    score: ScoreResponse
+    position: int
+    user: UserCompact

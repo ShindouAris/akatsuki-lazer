@@ -1,11 +1,17 @@
 """API endpoint tests."""
 
+import json
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_token_pair
 from app.core.security import get_password_hash
+from app.models.beatmap import Beatmap
+from app.models.beatmap import BeatmapSet
+from app.models.beatmap import BeatmapStatus
+from app.models.score import Score
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserStatistics
@@ -365,3 +371,181 @@ async def test_builds_endpoint(client: AsyncClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert "builds" in data
+
+
+@pytest.mark.asyncio
+async def test_get_rankings_performance(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test performance rankings endpoint."""
+    user1 = User(
+        username="rank_user1",
+        email="rank_user1@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    user2 = User(
+        username="rank_user2",
+        email="rank_user2@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add_all([user1, user2])
+    await db_session.flush()
+
+    db_session.add(UserStatistics(user_id=user1.id, mode=GameMode.OSU, pp=5000.0, ranked_score=1000000))
+    db_session.add(UserStatistics(user_id=user2.id, mode=GameMode.OSU, pp=3000.0, ranked_score=2000000))
+    await db_session.commit()
+
+    token_pair = create_token_pair(user1.id, ["*"])
+    response = await client.get(
+        "/api/v2/rankings/osu/performance",
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["kind"] == "performance"
+    assert data["total"] == 2
+    assert data["ranking"][0]["user"]["username"] == "rank_user1"
+    assert data["ranking"][0]["rank"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_rankings_invalid_type(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test rankings endpoint with invalid ranking type."""
+    user = User(
+        username="rank_auth_user",
+        email="rank_auth_user@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.commit()
+
+    token_pair = create_token_pair(user.id, ["*"])
+    response = await client.get(
+        "/api/v2/rankings/osu/invalid",
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_user_score_rank(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test user score rank aggregate endpoint."""
+    user = User(
+        username="score_user",
+        email="score_user@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    competitor = User(
+        username="score_competitor",
+        email="score_competitor@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add_all([user, competitor])
+    await db_session.flush()
+
+    beatmapset = BeatmapSet(
+        user_id=user.id,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=user.id,
+        version="Hard",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmap)
+    await db_session.flush()
+
+    data_payload = json.dumps(
+        {
+            "mods": [],
+            "statistics": {"great": 100, "ok": 10, "meh": 5, "miss": 1},
+            "maximum_statistics": {"great": 116},
+        },
+    )
+
+    higher_score = Score(
+        user_id=competitor.id,
+        beatmap_id=beatmap.id,
+        ruleset_id=int(GameMode.OSU),
+        data=data_payload,
+        total_score=1500000,
+        accuracy=99.1,
+        pp=220.0,
+        max_combo=1000,
+        rank="S",
+        passed=True,
+        ranked=True,
+    )
+    user_score = Score(
+        user_id=user.id,
+        beatmap_id=beatmap.id,
+        ruleset_id=int(GameMode.OSU),
+        data=data_payload,
+        total_score=1300000,
+        accuracy=98.5,
+        pp=200.0,
+        max_combo=950,
+        rank="A",
+        passed=True,
+        ranked=True,
+    )
+    db_session.add_all([higher_score, user_score])
+    await db_session.commit()
+
+    token_pair = create_token_pair(user.id, ["*"])
+    response = await client.get(
+        f"/api/v2/users/{user.id}/scores/rank",
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user"]["username"] == "score_user"
+    assert data["position"] == 2
+    assert data["score"]["id"] == user_score.id
+
+
+@pytest.mark.asyncio
+async def test_get_user_score_rank_not_found(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test user score rank endpoint when user has no ranked score."""
+    user = User(
+        username="score_empty",
+        email="score_empty@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.commit()
+
+    token_pair = create_token_pair(user.id, ["*"])
+    response = await client.get(
+        f"/api/v2/users/{user.id}/scores/rank",
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 404

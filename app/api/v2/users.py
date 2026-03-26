@@ -9,6 +9,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from sqlalchemy import and_
+
+from app.api.deps import CurrentUser
 from app.api.deps import DbSession
 from app.api.v2.schemas import RankHistoryResponse
 from app.api.v2.schemas import UserCompact
@@ -16,6 +19,7 @@ from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
 from app.models.user import GameMode
 from app.models.user import User
+from app.models.user import UserRelation
 from app.services.user_service import create_user
 from app.services.user_service import get_user_by_email
 from app.services.user_service import get_user_by_username
@@ -299,3 +303,110 @@ async def lookup_user(
         is_bot=user.is_bot,
         is_supporter=user.is_supporter,
     )
+
+
+@router.post("/users/{user_id}/block")
+async def block_user(
+    user_id: int,
+    user: CurrentUser,
+    db: DbSession,
+) -> dict:
+    """Block a user."""
+    # Can't block yourself
+    if user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot block yourself",
+        )
+
+    # Check if target user exists and is active
+    target = await db.get(User, user_id)
+    if not target or not target.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Check block limit
+    block_count_result = await db.execute(
+        select(UserRelation).where(
+            and_(
+                UserRelation.user_id == user.id,
+                UserRelation.foe == True,  # noqa: E712
+            ),
+        ),
+    )
+    block_count = len(block_count_result.fetchall())
+
+    if block_count >= user.max_blocks:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Block limit reached ({user.max_blocks})",
+        )
+
+    # Check if relation already exists
+    existing = await db.execute(
+        select(UserRelation).where(
+            and_(
+                UserRelation.user_id == user.id,
+                UserRelation.target_id == user_id,
+            ),
+        ),
+    )
+    relation = existing.scalar_one_or_none()
+
+    if relation:
+        if relation.foe:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Already blocking this user",
+            )
+        # Was friend, now becoming blocked - remove friend, add block
+        relation.friend = False
+        relation.foe = True
+    else:
+        relation = UserRelation(
+            user_id=user.id,
+            target_id=user_id,
+            friend=False,
+            foe=True,
+        )
+        db.add(relation)
+
+    await db.commit()
+    return {}
+
+
+@router.delete("/users/{user_id}/block")
+async def unblock_user(
+    user_id: int,
+    user: CurrentUser,
+    db: DbSession,
+) -> dict:
+    """Unblock a user."""
+    # Find the relation
+    result = await db.execute(
+        select(UserRelation).where(
+            and_(
+                UserRelation.user_id == user.id,
+                UserRelation.target_id == user_id,
+                UserRelation.foe == True,  # noqa: E712
+            ),
+        ),
+    )
+    relation = result.scalar_one_or_none()
+
+    if not relation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Block not found",
+        )
+
+    # If they're also a friend, just remove block status; otherwise delete
+    if relation.friend:
+        relation.foe = False
+    else:
+        await db.delete(relation)
+
+    await db.commit()
+    return {}

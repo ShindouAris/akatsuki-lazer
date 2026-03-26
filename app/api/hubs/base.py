@@ -182,7 +182,10 @@ async def run_message_loop(
     """
     while True:
         try:
-            message = await asyncio.wait_for(websocket.receive(), timeout=timeout)
+            if websocket.client_state != websocket._state.CONNECTED:
+                break
+            
+            message = await websocket.receive()
 
             # Extract data based on protocol
             if use_messagepack:
