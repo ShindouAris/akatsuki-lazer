@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     osu_api_client_id: str = ""
     osu_api_client_secret: str = ""
 
+    # PP calculation settings
+    pp_validate_client_value: bool = True
+    pp_tolerance: float = 0.1
+    pp_use_server_value_on_mismatch: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

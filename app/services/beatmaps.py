@@ -2,8 +2,10 @@
 
 import logging
 import time
+import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -83,6 +85,32 @@ def _parse_mode(mode_str: str) -> int:
     return mode_map.get(mode_str.lower(), 0)
 
 
+def _extract_beatmap_id_from_osu(osu_bytes: bytes) -> int | None:
+    """Extract BeatmapID from .osu file contents."""
+    try:
+        content = osu_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            content = osu_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            content = osu_bytes.decode("latin-1", errors="ignore")
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("BeatmapID:"):
+            continue
+        _, value = stripped.split(":", 1)
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    return None
+
+
 class BeatmapService:
     """Service for fetching beatmaps with mirror or official API support.
 
@@ -160,6 +188,58 @@ class BeatmapService:
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+
+    async def ensure_osu_file(self, beatmap: Beatmap) -> str | None:
+        """Ensure a beatmap .osu file is cached locally and return its path."""
+        if beatmap.beatmapset_id is None:
+            return None
+
+        root_dir = Path(self._settings.beatmaps_path)
+        osu_dir = root_dir / "osu"
+        osz_dir = root_dir / "osz"
+        osu_dir.mkdir(parents=True, exist_ok=True)
+        osz_dir.mkdir(parents=True, exist_ok=True)
+
+        osu_file_path = osu_dir / f"{beatmap.id}.osu"
+        if osu_file_path.exists():
+            return str(osu_file_path)
+
+        osz_file_path = osz_dir / f"{beatmap.beatmapset_id}.osz"
+        if not osz_file_path.exists():
+            try:
+                with osz_file_path.open("wb") as osz_file:
+                    async for chunk in self.download_beatmapset(beatmap.beatmapset_id):
+                        osz_file.write(chunk)
+            except Exception as exc:
+                logger.error(
+                    "Failed to download beatmapset %s for .osu extraction: %s",
+                    beatmap.beatmapset_id,
+                    exc,
+                )
+                return None
+
+        try:
+            with zipfile.ZipFile(osz_file_path, "r") as archive:
+                for archive_name in archive.namelist():
+                    if not archive_name.lower().endswith(".osu"):
+                        continue
+
+                    osu_bytes = archive.read(archive_name)
+                    if _extract_beatmap_id_from_osu(osu_bytes) != beatmap.id:
+                        continue
+
+                    osu_file_path.write_bytes(osu_bytes)
+                    return str(osu_file_path)
+        except Exception as exc:
+            logger.error("Failed to extract .osu file for beatmap %s: %s", beatmap.id, exc)
+            return None
+
+        logger.warning(
+            "Could not find beatmap id %s in beatmapset archive %s",
+            beatmap.id,
+            beatmap.beatmapset_id,
+        )
+        return None
 
     # ==================== Download Methods ====================
 

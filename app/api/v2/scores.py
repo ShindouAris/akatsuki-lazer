@@ -1,6 +1,7 @@
 """Score endpoints."""
 
 import json
+import logging
 from datetime import UTC
 from datetime import datetime
 
@@ -21,14 +22,19 @@ from app.api.v2.schemas import ModResponse
 from app.api.v2.schemas import ScoreResponse
 from app.api.v2.schemas import ScoreSubmissionRequest
 from app.api.v2.schemas import UserCompact
+from app.core.config import get_settings
 from app.models.beatmap import BeatmapStatus
 from app.models.score import Score
 from app.models.score import ScoreToken
 from app.models.user import GameMode
 from app.models.user import User
 from app.services.beatmaps import BeatmapService
+from app.services.pp import PPService
+from app.services.pp import mods_to_bitwise
+from app.services.user_service import refresh_user_pp_and_ranks
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _mode_to_string(mode: GameMode) -> str:
@@ -232,9 +238,13 @@ async def submit_score(
     # Note: Official implementation doesn't expire tokens, so we skip expiry check
 
     # Fetch beatmap (should already exist from token creation, but verify)
+    print(f"Score: {score_data}")
     service = BeatmapService(db)
+    osu_file_path: str | None = None
     try:
         beatmap = await service.get_beatmap(beatmap_id)
+        if beatmap is not None:
+            osu_file_path = await service.ensure_osu_file(beatmap)
     finally:
         await service.close()
 
@@ -261,6 +271,45 @@ async def submit_score(
     if score_data.total_score_without_mods:
         data["total_score_without_mods"] = score_data.total_score_without_mods
 
+    settings = get_settings()
+    calculated_pp: float | None = None
+    if score_data.passed and osu_file_path:
+        try:
+            pp_service = PPService()
+            pp_result = pp_service.calculate_for_score(
+                osu_file_path,
+                {
+                    "ruleset_id": token.ruleset_id,
+                    "mods_bitwise": mods_to_bitwise(data["mods"]),
+                    "max_combo": score_data.max_combo,
+                    "accuracy": score_data.accuracy,
+                    "statistics": score_data.statistics,
+                },
+            )
+            result_pp = pp_result.get("pp")
+            if isinstance(result_pp, float):
+                calculated_pp = result_pp
+        except Exception as exc:
+            logger.warning("Server-side PP calculation failed for score token %s: %s", token_id, exc)
+
+    final_pp = score_data.pp
+    if calculated_pp is not None:
+        if final_pp is None:
+            final_pp = calculated_pp
+        elif settings.pp_validate_client_value:
+            pp_diff = abs(final_pp - calculated_pp)
+            if pp_diff > settings.pp_tolerance:
+                logger.warning(
+                    "PP mismatch for user %s on beatmap %s: client=%.5f server=%.5f diff=%.5f",
+                    user.id,
+                    beatmap_id,
+                    final_pp,
+                    calculated_pp,
+                    pp_diff,
+                )
+                if settings.pp_use_server_value_on_mismatch:
+                    final_pp = calculated_pp
+
     # Create score
     ended_at = score_data.ended_at if score_data.ended_at else datetime.now(UTC)
     score = Score(
@@ -270,7 +319,7 @@ async def submit_score(
         data=json.dumps(data),
         total_score=score_data.total_score,
         accuracy=score_data.accuracy,
-        pp=score_data.pp,
+        pp=final_pp,
         max_combo=score_data.max_combo,
         rank=score_data.rank,
         passed=score_data.passed,
@@ -293,8 +342,9 @@ async def submit_score(
 
     await db.flush()
 
-    # TODO: Calculate PP
-    # TODO: Update user statistics
+    if score_data.passed and ranked:
+        await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))
+
     # TODO: Check for new personal best
 
     # Calculate rank on leaderboard (count scores with higher total_score)

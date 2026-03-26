@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import WebSocket
+from fastapi.websockets import WebSocketState
 
 from app.protocol.serialization import pack_invocation
 from app.protocol.serialization import pack_ping
@@ -182,7 +183,7 @@ async def run_message_loop(
     """
     while True:
         try:
-            if websocket.client_state != websocket._state.CONNECTED:
+            if websocket.client_state != WebSocketState.CONNECTED:
                 break
             
             message = await websocket.receive()

@@ -2,12 +2,16 @@
 
 from datetime import UTC
 from datetime import datetime
+from math import pow
 
+from sqlalchemy import and_
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
 from app.core.security import verify_password
+from app.models.score import Score
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserStatistics
@@ -130,3 +134,83 @@ async def update_user_statistics(
     # TODO: Implement PP calculation and ranking updates
 
     await db.commit()
+
+
+async def calculate_weighted_pp(db: AsyncSession, user_id: int, mode: GameMode) -> float:
+    """Calculate weighted PP from top 100 ranked scores for a user/mode."""
+    result = await db.execute(
+        select(Score.pp)
+        .where(
+            and_(
+                Score.user_id == user_id,
+                Score.ruleset_id == int(mode),
+                Score.passed.is_(True),
+                Score.ranked.is_(True),
+                Score.pp.is_not(None),
+            ),
+        )
+        .order_by(Score.pp.desc())
+        .limit(100),
+    )
+    top_pps = [float(row[0]) for row in result.fetchall() if row[0] is not None]
+
+    weighted_pp = 0.0
+    for index, value in enumerate(top_pps):
+        weighted_pp += value * pow(0.95, index)
+
+    return round(weighted_pp, 5)
+
+
+async def refresh_user_pp_and_ranks(db: AsyncSession, user_id: int, mode: GameMode) -> None:
+    """Recalculate a user's PP and update global/country rank snapshots."""
+    stats_result = await db.execute(
+        select(UserStatistics)
+        .where(
+            and_(
+                UserStatistics.user_id == user_id,
+                UserStatistics.mode == mode,
+            ),
+        ),
+    )
+    stats = stats_result.scalar_one_or_none()
+    if stats is None:
+        return
+
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if user is None:
+        return
+
+    weighted_pp = await calculate_weighted_pp(db, user_id=user_id, mode=mode)
+    stats.pp = weighted_pp
+
+    global_rank_result = await db.execute(
+        select(func.count(UserStatistics.id))
+        .join(User, User.id == UserStatistics.user_id)
+        .where(
+            and_(
+                UserStatistics.mode == mode,
+                UserStatistics.pp > weighted_pp,
+                User.is_restricted.is_(False),
+                User.is_bot.is_(False),
+            ),
+        ),
+    )
+    stats.global_rank = int(global_rank_result.scalar_one()) + 1
+
+    country_rank_result = await db.execute(
+        select(func.count(UserStatistics.id))
+        .join(User, User.id == UserStatistics.user_id)
+        .where(
+            and_(
+                UserStatistics.mode == mode,
+                UserStatistics.pp > weighted_pp,
+                User.country_acronym == user.country_acronym,
+                User.is_restricted.is_(False),
+                User.is_bot.is_(False),
+            ),
+        ),
+    )
+    stats.country_rank = int(country_rank_result.scalar_one()) + 1
+
+    await db.flush()
