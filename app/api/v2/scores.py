@@ -160,7 +160,7 @@ async def get_score(db: DbSession, score_id: int) -> ScoreResponse:
     return _score_to_response(score, include_beatmap=True, rank_global=rank_global)
 
 
-@router.get("/scores/{score_id}/replay")
+@router.get("/scores/{score_id}/download")
 async def download_score_replay(
     db: DbSession,
     user: ActiveUser,
@@ -189,7 +189,6 @@ async def download_score_replay(
         media_type="application/octet-stream",
         filename=f"{score.id}.osr",
     )
-
 
 @router.get("/beatmaps/{beatmap_id}/scores")
 async def get_beatmap_scores(
