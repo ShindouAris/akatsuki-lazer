@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.hubs.base import SignalRConnection
 from app.api.hubs.base import create_negotiate_response
+from app.api.hubs.base import extract_access_token
 from app.api.hubs.base import generate_connection_id
 from app.api.hubs.base import handle_handshake
 from app.api.hubs.base import run_message_loop
@@ -98,17 +99,6 @@ async def send_user_score_processed(user_id: int, score_id: int) -> None:
     logger.info(f"Sent UserScoreProcessed for user {user_id}, score {score_id}")
 
 
-def _extract_access_token(websocket: WebSocket) -> str | None:
-    """Extract bearer token from websocket headers or query parameters."""
-    auth_header = websocket.headers.get("authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        token = auth_header[7:].strip()
-        if token:
-            return token
-
-    return websocket.query_params.get("access_token") or websocket.query_params.get("token")
-
-
 @router.websocket("/spectator")
 async def spectator_websocket(websocket: WebSocket) -> None:
     """SignalR WebSocket endpoint for spectator hub.
@@ -117,7 +107,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
     - Playing users (survives brief disconnects)
     - Watch relationships (can be restored on reconnect)
     """
-    token = _extract_access_token(websocket)
+    token = extract_access_token(websocket)
     token_data = decode_token(token) if token else None
     if token_data is None:
         logger.warning("Spectator hub rejected unauthorized websocket connection")

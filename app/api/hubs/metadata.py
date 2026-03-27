@@ -17,11 +17,13 @@ from fastapi.responses import JSONResponse
 
 from app.api.hubs.base import SignalRConnection
 from app.api.hubs.base import create_negotiate_response
+from app.api.hubs.base import extract_access_token
 from app.api.hubs.base import generate_connection_id
 from app.api.hubs.base import handle_handshake
 from app.api.hubs.base import run_message_loop
 from app.api.hubs.base import send_completion
 from app.api.hubs.base import send_invocation
+from app.core.security import decode_token
 from app.protocol.enums import UserStatus
 from app.protocol.models import BeatmapUpdates
 from app.protocol.models import UserActivity
@@ -44,7 +46,8 @@ class MetadataConnection(SignalRConnection):
 # In-memory connection tracking (WebSocket objects can't be serialized to Redis)
 # User state (presence) is stored in Redis for persistence
 connections: dict[str, MetadataConnection] = {}  # connection_id -> connection
-user_connections: dict[int, str] = {}  # user_id -> connection_id
+connections_by_user: dict[int, set[str]] = {}  # user_id -> connection_ids
+presence_watching_connections: dict[int, set[str]] = {}  # user_id -> watching connection_ids
 
 
 @router.post("/metadata/negotiate")
@@ -69,29 +72,30 @@ async def _broadcast_presence_update(
     watcher_user_ids = await hub_state.get_presence_watchers()
 
     for watcher_user_id in watcher_user_ids:
-        conn_id = user_connections.get(watcher_user_id)
-        if not conn_id:
+        watcher_conn_ids = presence_watching_connections.get(watcher_user_id)
+        if not watcher_conn_ids:
             continue
 
-        conn = connections.get(conn_id)
-        if not conn or not conn.websocket:
-            continue
+        for conn_id in list(watcher_conn_ids):
+            conn = connections.get(conn_id)
+            if not conn or not conn.websocket:
+                continue
 
-        try:
-            if status is not None:
-                presence = UserPresence(activity=activity, status=status)
-                presence_data = presence.to_msgpack()
-            else:
-                presence_data = None
+            try:
+                if status is not None:
+                    presence = UserPresence(activity=activity, status=status)
+                    presence_data = presence.to_msgpack()
+                else:
+                    presence_data = None
 
-            await send_invocation(
-                conn.websocket,
-                conn.use_messagepack,
-                "UserPresenceUpdated",
-                [user_id, presence_data],
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send presence update to user {watcher_user_id}: {e}")
+                await send_invocation(
+                    conn.websocket,
+                    conn.use_messagepack,
+                    "UserPresenceUpdated",
+                    [user_id, presence_data],
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send presence update to user {watcher_user_id}: {e}")
 
 
 async def broadcast_beatmap_updates(beatmap_set_ids: list[int], queue_id: int = 1) -> int:
@@ -141,8 +145,7 @@ async def trigger_metadata_refresh(beatmap_set_ids: list[int]) -> dict:
 
 def get_online_count() -> int:
     """Get the number of unique online users."""
-    user_ids = {conn.user_id for conn in connections.values() if conn.user_id}
-    return len(user_ids)
+    return len(connections_by_user)
 
 
 @router.websocket("/metadata")
@@ -153,6 +156,13 @@ async def metadata_websocket(websocket: WebSocket) -> None:
     - User presence (activity + status) - survives brief disconnects
     - Presence watcher subscriptions
     """
+    token = extract_access_token(websocket)
+    token_data = decode_token(token) if token else None
+    if token_data is None:
+        logger.warning("Metadata hub rejected unauthorized websocket connection")
+        await websocket.close(code=4401)
+        return
+
     await websocket.accept()
     connection_id = websocket.query_params.get("id", generate_connection_id())
     logger.info(f"Metadata hub connected: {connection_id}")
@@ -163,11 +173,11 @@ async def metadata_websocket(websocket: WebSocket) -> None:
     conn = MetadataConnection(
         connection_id=connection_id,
         websocket=websocket,
-        user_id=2,  # TODO: Get from auth token
+        user_id=token_data.user_id,
         status=UserStatus.ONLINE,
     )
     connections[connection_id] = conn
-    user_connections[conn.user_id] = connection_id
+    connections_by_user.setdefault(conn.user_id, set()).add(connection_id)
 
     try:
         # Handle handshake
@@ -194,8 +204,12 @@ async def metadata_websocket(websocket: WebSocket) -> None:
             logger.info(f"Metadata hub: {target}({len(args)} args)")
 
             if target == "BeginWatchingUserPresence":
-                await hub_state.add_presence_watcher(conn.user_id)
-                conn.watching_presence = True
+                if not conn.watching_presence:
+                    conn.watching_presence = True
+                    watcher_conn_ids = presence_watching_connections.setdefault(conn.user_id, set())
+                    watcher_conn_ids.add(connection_id)
+                    if len(watcher_conn_ids) == 1:
+                        await hub_state.add_presence_watcher(conn.user_id)
 
                 # Send all currently online users from Redis
                 online_users = await hub_state.get_all_online_users()
@@ -210,8 +224,15 @@ async def metadata_websocket(websocket: WebSocket) -> None:
                         )
 
             elif target == "EndWatchingUserPresence":
-                await hub_state.remove_presence_watcher(conn.user_id)
-                conn.watching_presence = False
+                if conn.watching_presence:
+                    conn.watching_presence = False
+                    watcher_conn_ids = presence_watching_connections.get(conn.user_id, set())
+                    watcher_conn_ids.discard(connection_id)
+                    if not watcher_conn_ids:
+                        presence_watching_connections.pop(conn.user_id, None)
+                        await hub_state.remove_presence_watcher(conn.user_id)
+                    else:
+                        presence_watching_connections[conn.user_id] = watcher_conn_ids
 
             elif target == "UpdateActivity":
                 activity_data = args[0] if args else None
@@ -248,14 +269,31 @@ async def metadata_websocket(websocket: WebSocket) -> None:
     except Exception as e:
         logger.exception(f"Metadata hub error: {e}")
     finally:
-        # Cleanup Redis state
-        await hub_state.remove_presence(conn.user_id)
-        await hub_state.remove_presence_watcher(conn.user_id)
+        # Remove watcher subscription for this connection and clear user watcher state if this was last watcher.
+        watcher_conn_ids = presence_watching_connections.get(conn.user_id)
+        if watcher_conn_ids:
+            watcher_conn_ids.discard(connection_id)
+            if not watcher_conn_ids:
+                presence_watching_connections.pop(conn.user_id, None)
+                await hub_state.remove_presence_watcher(conn.user_id)
+            else:
+                presence_watching_connections[conn.user_id] = watcher_conn_ids
 
-        # Broadcast that user is offline
-        await _broadcast_presence_update(conn.user_id, None, None)
+        # Remove this connection and check if user still has active connections.
+        user_conn_ids = connections_by_user.get(conn.user_id)
+        has_active_connections = False
+        if user_conn_ids:
+            user_conn_ids.discard(connection_id)
+            if user_conn_ids:
+                connections_by_user[conn.user_id] = user_conn_ids
+                has_active_connections = True
+            else:
+                connections_by_user.pop(conn.user_id, None)
 
-        # Remove from in-memory tracking
-        user_connections.pop(conn.user_id, None)
+        # Cleanup Redis state only when this was the user's last active connection.
+        if not has_active_connections:
+            await hub_state.remove_presence(conn.user_id)
+            await _broadcast_presence_update(conn.user_id, None, None)
+
         connections.pop(connection_id, None)
         logger.info(f"Metadata hub closed: {connection_id}")

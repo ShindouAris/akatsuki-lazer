@@ -61,6 +61,17 @@ def create_negotiate_response() -> dict:
     }
 
 
+def extract_access_token(websocket: WebSocket) -> str | None:
+    """Extract bearer token from websocket headers or query parameters."""
+    auth_header = websocket.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+
+    return websocket.query_params.get("access_token") or websocket.query_params.get("token")
+
+
 async def handle_handshake(websocket: WebSocket) -> tuple[bool, bool]:
     """Handle SignalR handshake.
 
