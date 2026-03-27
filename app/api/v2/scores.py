@@ -322,6 +322,7 @@ async def submit_score(
                 {
                     "ruleset_id": token.ruleset_id,
                     "mods_bitwise": mods_to_bitwise(data["mods"]),
+                    "mods": data["mods"],
                     "max_combo": score_data.max_combo,
                     "accuracy": score_data.accuracy,
                     "statistics": score_data.statistics,

@@ -5,7 +5,7 @@ description = "Python implementation of osu! lazer server"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "akatsuki-pp-py>=1.0.0",
+    "rosu-pp-py>=3.1.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "sqlalchemy[asyncio]>=2.0.0",
@@ -23,7 +23,6 @@ dependencies = [
     "aiofiles>=24.1.0",
     "python-socketio>=5.11.0",
     "colorama>=0.4.6",
-    "maturin>=1.12.6",
 ]
 
 [project.optional-dependencies]
