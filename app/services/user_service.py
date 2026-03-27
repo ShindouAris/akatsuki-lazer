@@ -5,6 +5,7 @@ from datetime import datetime
 from math import pow
 
 from sqlalchemy import and_
+from sqlalchemy import case
 from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -174,8 +175,63 @@ async def calculate_weighted_pp(db: AsyncSession, user_id: int, mode: GameMode) 
     return round(weighted_pp, 5)
 
 
+async def calculate_profile_hit_accuracy(db: AsyncSession, user_id: int, mode: GameMode) -> float:
+    """Calculate profile accuracy as average best accuracy per passed ranked beatmap."""
+    normalized_accuracy = case(
+        (Score.accuracy <= 1.0, Score.accuracy * 100.0),
+        else_=Score.accuracy,
+    )
+
+    best_accuracy_per_beatmap = (
+        select(
+            Score.beatmap_id,
+            func.max(normalized_accuracy).label("best_accuracy"),
+        )
+        .where(
+            and_(
+                Score.user_id == user_id,
+                Score.ruleset_id == int(mode),
+                Score.passed.is_(True),
+                Score.ranked.is_(True),
+                Score.rank != "F",
+            ),
+        )
+        .group_by(Score.beatmap_id)
+        .subquery()
+    )
+
+    average_result = await db.execute(select(func.avg(best_accuracy_per_beatmap.c.best_accuracy)))
+    average_accuracy = average_result.scalar_one_or_none()
+
+    if average_accuracy is None:
+        return 100.0
+
+    return round(float(average_accuracy), 5)
+
+
+async def refresh_user_hit_accuracy(db: AsyncSession, user_id: int, mode: GameMode) -> None:
+    """Recalculate and persist profile hit accuracy snapshots."""
+    stats_result = await db.execute(
+        select(UserStatistics)
+        .where(
+            and_(
+                UserStatistics.user_id == user_id,
+                UserStatistics.mode == mode,
+            ),
+        ),
+    )
+    stats = stats_result.scalar_one_or_none()
+    if stats is None:
+        return
+
+    profile_accuracy = await calculate_profile_hit_accuracy(db, user_id=user_id, mode=mode)
+    stats.hit_accuracy = profile_accuracy
+    stats.accuracy = profile_accuracy
+    await db.flush()
+
+
 async def refresh_user_pp_and_ranks(db: AsyncSession, user_id: int, mode: GameMode) -> None:
-    """Recalculate a user's PP and update global/country rank snapshots."""
+    """Recalculate a user's PP/accuracy and update global/country rank snapshots."""
     stats_result = await db.execute(
         select(UserStatistics)
         .where(
@@ -196,6 +252,8 @@ async def refresh_user_pp_and_ranks(db: AsyncSession, user_id: int, mode: GameMo
 
     weighted_pp = await calculate_weighted_pp(db, user_id=user_id, mode=mode)
     stats.pp = weighted_pp
+
+    await refresh_user_hit_accuracy(db, user_id=user_id, mode=mode)
 
     global_rank_result = await db.execute(
         select(func.count(UserStatistics.id))

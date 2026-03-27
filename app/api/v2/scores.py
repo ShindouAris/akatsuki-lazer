@@ -35,6 +35,7 @@ from app.services.pp import PPService
 from app.services.pp import mods_to_bitwise
 from app.services.replay import ReplayStorageService
 from app.services.user_service import get_user_statistics
+from app.services.user_service import refresh_user_hit_accuracy
 from app.services.user_service import refresh_user_pp_and_ranks
 from app.services.user_service import update_user_statistics
 
@@ -437,6 +438,8 @@ async def submit_score(
 
     if score_data.passed and ranked:
         await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))
+    else:
+        await refresh_user_hit_accuracy(db, user_id=user.id, mode=GameMode(token.ruleset_id))
 
     # TODO: Check for new personal best
 
