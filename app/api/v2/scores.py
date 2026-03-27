@@ -391,11 +391,20 @@ async def submit_score(
 
     await db.flush()
 
-    # Persist replay payload buffered from spectator frame stream.
+    # Persist replay buffered from spectator frame stream for successful plays only.
     try:
         hub_state = await get_hub_state_service()
         replay_bundles = await hub_state.get_replay_frame_bundles(token.id)
-        if replay_bundles:
+        is_failed_score = (not score_data.passed) or score_data.rank.strip().upper() == "F"
+
+        if is_failed_score:
+            await hub_state.clear_replay_frame_bundles(token.id)
+            logger.debug(
+                "Skipping replay persistence for failed score %s (token %s)",
+                score.id,
+                token.id,
+            )
+        elif replay_bundles:
             replay_service = ReplayStorageService()
             replay_path = await replay_service.persist_score_replay(
                 score_id=score.id,
