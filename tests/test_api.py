@@ -645,7 +645,7 @@ async def test_download_score_replay_success(
 
         token_pair = create_token_pair(user.id, ["*"])
         response = await client.get(
-            f"/api/v2/scores/{score.id}/replay",
+            f"/api/v2/scores/{score.id}/download",
             headers={"Authorization": f"Bearer {token_pair.access_token}"},
         )
 
