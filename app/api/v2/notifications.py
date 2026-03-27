@@ -76,13 +76,14 @@ async def notifications_websocket(websocket: WebSocket) -> None:
                             )
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid JSON in notifications: {message['text']!r}")
-                    except WebSocketDisconnect:
-                        logger.info("Notifications WebSocket disconnected during message handling")
-                        break
 
             except asyncio.TimeoutError:
                 # Send a keepalive/ping to keep connection alive
                 pass
+
+            except RuntimeError as e:
+                logger.warning(f"Runtime error in notifications WebSocket: {e}")
+                break
 
             except WebSocketDisconnect:
                 logger.info("Notifications WebSocket disconnected")
