@@ -117,23 +117,36 @@ async def get_user_statistics(
 async def update_user_statistics(
     db: AsyncSession,
     stats: UserStatistics,
-    score_data: dict,
+    score: Score,
 ) -> None:
     """Update user statistics after a score submission."""
     stats.play_count += 1
-    stats.total_score += score_data.get("total_score", 0)
+    stats.total_score += score.total_score
 
-    # Update ranked score if the score is ranked
-    if score_data.get("ranked", False):
-        stats.ranked_score += score_data.get("total_score", 0)
+    # Only passed ranked plays contribute to ranked statistics.
+    if score.passed and score.ranked:
+        stats.ranked_score += score.total_score
+
+        grade_field_by_rank = {
+            "X": "grade_ss",
+            "SS": "grade_ss",
+            "XH": "grade_ssh",
+            "SSH": "grade_ssh",
+            "S": "grade_s",
+            "SH": "grade_sh",
+            "A": "grade_a",
+        }
+
+        rank = score.rank.strip().upper()
+        grade_field = grade_field_by_rank.get(rank)
+        if grade_field is not None:
+            setattr(stats, grade_field, getattr(stats, grade_field) + 1)
 
     # Update max combo
-    if score_data.get("max_combo", 0) > stats.maximum_combo:
-        stats.maximum_combo = score_data["max_combo"]
+    if score.max_combo > stats.maximum_combo:
+        stats.maximum_combo = score.max_combo
 
-    # TODO: Implement PP calculation and ranking updates
-
-    await db.commit()
+    await db.flush()
 
 
 async def calculate_weighted_pp(db: AsyncSession, user_id: int, mode: GameMode) -> float:

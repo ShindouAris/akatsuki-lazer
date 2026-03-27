@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
-from app.api.v2.schemas import BeatmapCompact
+from app.api.v2.schemas import BeatmapCompact, Statistic
 from app.api.v2.schemas import ModResponse
 from app.api.v2.schemas import RankingUserEntryResponse
 from app.api.v2.schemas import RankingsResponse
@@ -188,6 +188,15 @@ async def get_rankings(
                 pp=stats.pp,
                 ranked_score=stats.ranked_score,
                 country_code=user.country_acronym,
+                grade_counts=Statistic(
+                    ssh=stats.grade_ssh,
+                    ss=stats.grade_ss,
+                    sh=stats.grade_sh,
+                    s=stats.grade_s,
+                    a=stats.grade_a
+                ),
+                play_count=stats.play_count,
+                hit_accuracy=stats.hit_accuracy,
             ),
         )
 

@@ -323,6 +323,12 @@ class KudosuHistoryResponse(BaseModel):
     created_at: datetime
     beatmap: BeatmapCompact | None = None
 
+class Statistic(BaseModel):
+    ssh: int = 0
+    ss: int = 0
+    sh: int = 0
+    s: int = 0
+    a: int = 0
 
 class RankingUserEntryResponse(BaseModel):
     """Single user entry in a ranking list."""
@@ -332,6 +338,9 @@ class RankingUserEntryResponse(BaseModel):
     pp: float = 0.0
     ranked_score: int = 0
     country_code: str = "XX"
+    grade_counts: Statistic = Field(default_factory=Statistic)
+    hit_accuracy: float = Field(alias="accuracy", default=100.0)
+    play_count: int = 0
 
 
 class RankingsResponse(BaseModel):

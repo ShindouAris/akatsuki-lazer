@@ -34,7 +34,9 @@ from app.services.hub_state import get_hub_state_service
 from app.services.pp import PPService
 from app.services.pp import mods_to_bitwise
 from app.services.replay import ReplayStorageService
+from app.services.user_service import get_user_statistics
 from app.services.user_service import refresh_user_pp_and_ranks
+from app.services.user_service import update_user_statistics
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -428,6 +430,10 @@ async def submit_score(
             logger.debug("No replay frame bundles buffered for token %s", token.id)
     except Exception as exc:
         logger.warning("Replay persistence failed for score token %s: %s", token.id, exc)
+
+    stats = await get_user_statistics(db, user.id, GameMode(token.ruleset_id))
+    if stats is not None:
+        await update_user_statistics(db, stats, score)
 
     if score_data.passed and ranked:
         await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))

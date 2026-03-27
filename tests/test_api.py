@@ -142,6 +142,8 @@ async def test_get_me_authenticated(
     data = response.json()
     assert data["username"] == "testuser"
     assert data["id"] == user.id
+    assert "statistics" in data
+    assert "grade_counts" in data["statistics"]
 
 
 @pytest.mark.asyncio
@@ -177,6 +179,8 @@ async def test_get_user_by_id(
     assert response.status_code == 200
     data = response.json()
     assert data["username"] == "testuser"
+    assert "statistics" in data
+    assert "grade_counts" in data["statistics"]
 
 
 @pytest.mark.asyncio
