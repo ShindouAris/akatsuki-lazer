@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import ActiveUser
 from app.api.deps import DbSession
 from app.api.v2.schemas import BeatmapCompact
+from app.api.v2.schemas import GetBeatmapsResponse
 from app.api.v2.schemas import BeatmapResponse
 from app.api.v2.schemas import BeatmapsetCompact
 from app.api.v2.schemas import BeatmapsetResponse
@@ -132,6 +133,55 @@ async def lookup_beatmap(
             **compact.model_dump(),
             beatmapset=beatmapset,
         )
+    finally:
+        await service.close()
+
+
+@router.get("/beatmaps/", response_model=GetBeatmapsResponse)
+@router.get("/beatmaps", response_model=GetBeatmapsResponse, include_in_schema=False)
+async def get_beatmaps(
+    db: DbSession,
+    ids_bracket: list[int] = Query(default_factory=list, alias="ids[]"),
+    ids: list[int] = Query(default_factory=list),
+) -> GetBeatmapsResponse:
+    """Get multiple beatmaps by IDs.
+
+    This endpoint is used by lazer multiplayer requests, which send ids[] query values.
+    """
+    requested_ids: list[int] = []
+    for beatmap_id in [*ids_bracket, *ids]:
+        if beatmap_id not in requested_ids:
+            requested_ids.append(beatmap_id)
+
+    if not requested_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide at least one beatmap id via ids[]",
+        )
+
+    service = BeatmapService(db)
+
+    try:
+        beatmaps: list[BeatmapResponse] = []
+
+        for beatmap_id in requested_ids:
+            beatmap = await service.get_beatmap(beatmap_id)
+            if not beatmap:
+                continue
+
+            compact = _beatmap_to_compact(beatmap)
+            beatmapset = (
+                _beatmapset_to_compact(beatmap.beatmapset) if beatmap.beatmapset else None
+            )
+
+            beatmaps.append(
+                BeatmapResponse(
+                    **compact.model_dump(),
+                    beatmapset=beatmapset,
+                ),
+            )
+
+        return GetBeatmapsResponse(beatmaps=beatmaps)
     finally:
         await service.close()
 

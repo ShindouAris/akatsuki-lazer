@@ -76,11 +76,13 @@ async def get_friends(user: CurrentUser, db: DbSession) -> list[UserRelationResp
 
 @router.post("/friends")
 async def add_friend(
-    target_id: int,
+    target: int,
     user: CurrentUser,
     db: DbSession,
 ) -> UserRelationResponse:
     """Add a user as a friend."""
+    target_id = target
+
     # Can't friend yourself
     if target_id == user.id:
         raise HTTPException(
@@ -89,8 +91,8 @@ async def add_friend(
         )
 
     # Check if target user exists and is active
-    target = await db.get(User, target_id)
-    if not target or not target.is_active:
+    target_user = await db.get(User, target_id)
+    if not target_user or not target_user.is_active:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
@@ -161,7 +163,7 @@ async def add_friend(
         target_id=target_id,
         relation_type="friend",
         mutual=is_mutual,
-        target=UserCompact.model_validate(target),
+        target=UserCompact.model_validate(target_user),
     )
 
 

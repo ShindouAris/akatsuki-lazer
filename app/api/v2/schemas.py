@@ -122,6 +122,12 @@ class BeatmapResponse(BeatmapCompact):
     beatmapset: BeatmapsetCompact | None = None
 
 
+class GetBeatmapsResponse(BaseModel):
+    """Response for bulk beatmap lookup endpoint."""
+
+    beatmaps: list[BeatmapResponse] = Field(default_factory=list)
+
+
 class BeatmapsetResponse(BeatmapsetCompact):
     """Full beatmapset response with beatmaps."""
 

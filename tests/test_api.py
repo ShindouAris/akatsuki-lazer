@@ -16,6 +16,7 @@ from app.models.beatmap import BeatmapStatus
 from app.models.score import Score
 from app.models.user import GameMode
 from app.models.user import User
+from app.models.user import UserRelation
 from app.models.user import UserStatistics
 
 
@@ -181,6 +182,49 @@ async def test_get_user_by_id(
     assert data["username"] == "testuser"
     assert "statistics" in data
     assert "grade_counts" in data["statistics"]
+
+
+@pytest.mark.asyncio
+async def test_add_friend_success(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Test adding a friend creates a friend relation and returns compact target user."""
+    current_user = User(
+        username="friendowner",
+        email="friendowner@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    target_user = User(
+        username="friendtarget",
+        email="friendtarget@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="JP",
+    )
+    db_session.add(current_user)
+    db_session.add(target_user)
+    await db_session.commit()
+    await db_session.refresh(current_user)
+    await db_session.refresh(target_user)
+
+    token_pair = create_token_pair(current_user.id, ["*"])
+    response = await client.post(
+        "/api/v2/friends",
+        params={"target": target_user.id},
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_id"] == target_user.id
+    assert data["relation_type"] == "friend"
+    assert data["target"]["id"] == target_user.id
+
+    relation = await db_session.get(UserRelation, (current_user.id, target_user.id))
+    assert relation is not None
+    assert relation.friend is True
+    assert relation.foe is False
 
 
 @pytest.mark.asyncio
@@ -368,6 +412,62 @@ async def test_beatmapset_search_empty(client: AsyncClient) -> None:
     data = response.json()
     assert "beatmapsets" in data
     assert isinstance(data["beatmapsets"], list)
+
+
+@pytest.mark.asyncio
+async def test_get_beatmaps_by_ids_for_multiplayer(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Beatmaps list endpoint supports ids[] query format used by lazer."""
+    beatmapset = BeatmapSet(
+        user_id=None,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap_one = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Easy",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+    )
+    beatmap_two = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Hard",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add_all([beatmap_one, beatmap_two])
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/v2/beatmaps/",
+        params=[
+            ("ids[]", beatmap_two.id),
+            ("ids[]", beatmap_one.id),
+        ],
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "beatmaps" in data
+    assert [beatmap["id"] for beatmap in data["beatmaps"]] == [beatmap_two.id, beatmap_one.id]
+    assert data["beatmaps"][0]["beatmapset"]["id"] == beatmapset.id
+
+
+@pytest.mark.asyncio
+async def test_get_beatmaps_requires_ids(client: AsyncClient) -> None:
+    """Beatmaps list endpoint returns 400 when no ids are provided."""
+    response = await client.get("/api/v2/beatmaps/")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Must provide at least one beatmap id via ids[]"
 
 
 @pytest.mark.asyncio
