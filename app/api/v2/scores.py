@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
+from fastapi.responses import FileResponse
 from sqlalchemy import and_
 from sqlalchemy import func
 from sqlalchemy import select
@@ -29,8 +30,10 @@ from app.models.score import ScoreToken
 from app.models.user import GameMode
 from app.models.user import User
 from app.services.beatmaps import BeatmapService
+from app.services.hub_state import get_hub_state_service
 from app.services.pp import PPService
 from app.services.pp import mods_to_bitwise
+from app.services.replay import ReplayStorageService
 from app.services.user_service import refresh_user_pp_and_ranks
 
 router = APIRouter()
@@ -155,6 +158,37 @@ async def get_score(db: DbSession, score_id: int) -> ScoreResponse:
         rank_global = rank_result.scalar()
 
     return _score_to_response(score, include_beatmap=True, rank_global=rank_global)
+
+
+@router.get("/scores/{score_id}/replay")
+async def download_score_replay(
+    db: DbSession,
+    user: ActiveUser,
+    score_id: int,
+) -> FileResponse:
+    """Download replay file for a submitted score."""
+    result = await db.execute(select(Score).where(Score.id == score_id))
+    score = result.scalar_one_or_none()
+
+    if not score or not score.has_replay:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Replay not found",
+        )
+
+    replay_service = ReplayStorageService()
+    replay_path = replay_service.get_score_replay_path(score.id)
+    if not replay_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Replay file missing",
+        )
+
+    return FileResponse(
+        path=str(replay_path),
+        media_type="application/octet-stream",
+        filename=f"{score.id}.osr",
+    )
 
 
 @router.get("/beatmaps/{beatmap_id}/scores")
@@ -356,6 +390,35 @@ async def submit_score(
         beatmap.pass_count += 1
 
     await db.flush()
+
+    # Persist replay payload buffered from spectator frame stream.
+    try:
+        hub_state = await get_hub_state_service()
+        replay_bundles = await hub_state.get_replay_frame_bundles(token.id)
+        if replay_bundles:
+            replay_service = ReplayStorageService()
+            replay_path = await replay_service.persist_score_replay(
+                score_id=score.id,
+                username=user.username,
+                beatmap_checksum=beatmap.checksum,
+                ruleset_id=token.ruleset_id,
+                ended_at=ended_at,
+                build_id=token.build_id,
+                total_score=score.total_score,
+                max_combo=score.max_combo,
+                beatmap_max_combo=beatmap.max_combo,
+                statistics=score_data.statistics,
+                mods=data["mods"],
+                frame_bundles=replay_bundles,
+            )
+            if replay_path is not None:
+                score.has_replay = True
+                await hub_state.clear_replay_frame_bundles(token.id)
+                logger.info("Stored replay for score %s at %s", score.id, replay_path)
+        else:
+            logger.debug("No replay frame bundles buffered for token %s", token.id)
+    except Exception as exc:
+        logger.warning("Replay persistence failed for score token %s: %s", token.id, exc)
 
     if score_data.passed and ranked:
         await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))

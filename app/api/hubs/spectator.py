@@ -22,6 +22,7 @@ from app.api.hubs.base import generate_connection_id
 from app.api.hubs.base import handle_handshake
 from app.api.hubs.base import run_message_loop
 from app.api.hubs.base import send_invocation
+from app.core.security import decode_token
 from app.protocol.models import FrameDataBundle
 from app.protocol.models import SpectatorState
 from app.protocol.models import SpectatorUser
@@ -97,6 +98,17 @@ async def send_user_score_processed(user_id: int, score_id: int) -> None:
     logger.info(f"Sent UserScoreProcessed for user {user_id}, score {score_id}")
 
 
+def _extract_access_token(websocket: WebSocket) -> str | None:
+    """Extract bearer token from websocket headers or query parameters."""
+    auth_header = websocket.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+
+    return websocket.query_params.get("access_token") or websocket.query_params.get("token")
+
+
 @router.websocket("/spectator")
 async def spectator_websocket(websocket: WebSocket) -> None:
     """SignalR WebSocket endpoint for spectator hub.
@@ -105,6 +117,13 @@ async def spectator_websocket(websocket: WebSocket) -> None:
     - Playing users (survives brief disconnects)
     - Watch relationships (can be restored on reconnect)
     """
+    token = _extract_access_token(websocket)
+    token_data = decode_token(token) if token else None
+    if token_data is None:
+        logger.warning("Spectator hub rejected unauthorized websocket connection")
+        await websocket.close(code=4401)
+        return
+
     await websocket.accept()
     connection_id = websocket.query_params.get("id", generate_connection_id())
     logger.info(f"Spectator hub connected: {connection_id}")
@@ -115,7 +134,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
     conn = SpectatorConnection(
         connection_id=connection_id,
         websocket=websocket,
-        user_id=2,  # TODO: Get from auth token
+        user_id=token_data.user_id,
     )
     connections[connection_id] = conn
     user_connections[conn.user_id] = connection_id
@@ -148,7 +167,21 @@ async def spectator_websocket(websocket: WebSocket) -> None:
             logger.info(f"Spectator hub: {target}({len(args)} args)")
 
             if target == "BeginPlaySession":
-                score_token = args[0] if args else None
+                raw_score_token = args[0] if args else None
+                if raw_score_token is None:
+                    logger.warning("BeginPlaySession missing score token from user %s", conn.user_id)
+                    return
+
+                try:
+                    score_token = int(raw_score_token)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "BeginPlaySession invalid score token %r from user %s",
+                        raw_score_token,
+                        conn.user_id,
+                    )
+                    return
+
                 state_data = args[1] if len(args) > 1 else {}
                 current_state = SpectatorState.from_msgpack(state_data)
                 conn.is_playing = True
@@ -164,6 +197,16 @@ async def spectator_websocket(websocket: WebSocket) -> None:
             elif target == "SendFrameData":
                 frame_data = args[0] if args else {}
                 frame_bundle = FrameDataBundle.from_msgpack(frame_data)
+
+                if score_token is not None:
+                    buffered_count = await hub_state.append_replay_frame_bundle(score_token, frame_bundle)
+                    if buffered_count % 25 == 0:
+                        logger.debug(
+                            "Buffered %s frame bundles for score token %s",
+                            buffered_count,
+                            score_token,
+                        )
+
                 await _broadcast_to_watchers(
                     conn.user_id,
                     "UserSentFrames",
@@ -240,6 +283,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         await hub_state.clear_user_watches(conn.user_id)
 
         # Remove from in-memory tracking
-        user_connections.pop(conn.user_id, None)
+        if user_connections.get(conn.user_id) == connection_id:
+            user_connections.pop(conn.user_id, None)
         connections.pop(connection_id, None)
         logger.info(f"Spectator hub closed: {connection_id}")

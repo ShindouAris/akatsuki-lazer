@@ -1,11 +1,13 @@
 """API endpoint tests."""
 
 import json
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.security import create_token_pair
 from app.core.security import get_password_hash
 from app.models.beatmap import Beatmap
@@ -549,3 +551,103 @@ async def test_get_user_score_rank_not_found(
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_score_replay_not_found(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Replay endpoint returns 404 when score replay does not exist."""
+    user = User(
+        username="replay_user_missing",
+        email="replay_user_missing@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.commit()
+
+    token_pair = create_token_pair(user.id, ["*"])
+    response = await client.get(
+        "/api/v2/scores/99999/replay",
+        headers={"Authorization": f"Bearer {token_pair.access_token}"},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_score_replay_success(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Replay endpoint returns .osr file for authenticated users."""
+    settings = get_settings()
+    original_replays_path = settings.replays_path
+    monkeypatch.setattr(settings, "replays_path", str(tmp_path))
+
+    try:
+        user = User(
+            username="replay_user_success",
+            email="replay_user_success@example.com",
+            password_hash=get_password_hash("testpassword"),
+            country_acronym="US",
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        beatmapset = BeatmapSet(
+            user_id=user.id,
+            artist="artist",
+            title="title",
+            creator="creator",
+            status=BeatmapStatus.RANKED,
+        )
+        db_session.add(beatmapset)
+        await db_session.flush()
+
+        beatmap = Beatmap(
+            beatmapset_id=beatmapset.id,
+            user_id=user.id,
+            version="Hard",
+            mode=GameMode.OSU,
+            status=BeatmapStatus.RANKED,
+        )
+        db_session.add(beatmap)
+        await db_session.flush()
+
+        score = Score(
+            user_id=user.id,
+            beatmap_id=beatmap.id,
+            ruleset_id=int(GameMode.OSU),
+            data=json.dumps({"mods": [], "statistics": {}, "maximum_statistics": {}}),
+            total_score=123456,
+            accuracy=98.5,
+            pp=120.0,
+            max_combo=500,
+            rank="A",
+            passed=True,
+            ranked=True,
+            has_replay=True,
+        )
+        db_session.add(score)
+        await db_session.commit()
+
+        replay_path = tmp_path / f"{score.id}.osr"
+        replay_path.write_bytes(b"osr")
+
+        token_pair = create_token_pair(user.id, ["*"])
+        response = await client.get(
+            f"/api/v2/scores/{score.id}/replay",
+            headers={"Authorization": f"Bearer {token_pair.access_token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/octet-stream")
+        assert response.headers["content-disposition"].endswith(f'{score.id}.osr"')
+        assert response.content
+    finally:
+        monkeypatch.setattr(settings, "replays_path", original_replays_path)

@@ -22,6 +22,7 @@ import redis.asyncio as redis
 
 from app.core.config import get_settings
 from app.protocol.enums import UserStatus
+from app.protocol.models import FrameDataBundle
 from app.protocol.models import SpectatorState
 from app.protocol.models import UserActivity
 from app.protocol.models import UserPresence
@@ -34,11 +35,13 @@ PREFIX_PLAYING = "hub:playing:"  # {user_id} -> SpectatorState JSON
 PREFIX_WATCHING = "hub:watching:"  # {user_id} -> Set of watched user IDs
 PREFIX_WATCHERS = "hub:watchers:"  # {user_id} -> Set of watcher user IDs (reverse index)
 PREFIX_PRESENCE_WATCHERS = "hub:presence_watchers"  # Set of user IDs watching presence
+PREFIX_REPLAY_FRAMES = "hub:replay:frames:"  # {score_token} -> list of FrameDataBundle payloads
 
 # TTLs for automatic expiration
 TTL_PRESENCE = timedelta(minutes=5)  # Presence expires after 5 min of no updates
 TTL_PLAYING = timedelta(hours=2)  # Playing state expires after 2 hours max
 TTL_WATCHING = timedelta(hours=1)  # Watch relationships expire after 1 hour
+TTL_REPLAY_FRAMES = timedelta(hours=1)  # Replay buffers expire if score is never submitted
 
 
 @dataclass
@@ -277,6 +280,54 @@ class HubStateService:
         return await self.redis.exists(key) > 0
 
     # =========================================================================
+    # Replay Frame Buffers (Spectator -> Score Submission)
+    # =========================================================================
+
+    async def append_replay_frame_bundle(
+        self,
+        score_token: int,
+        frame_bundle: FrameDataBundle,
+    ) -> int:
+        """Append a replay frame bundle for a score token.
+
+        Returns:
+            Current number of buffered bundles for the token.
+        """
+        key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
+        payload = json.dumps(frame_bundle.to_msgpack())
+        length = await self.redis.rpush(key, payload)
+        await self.redis.expire(key, TTL_REPLAY_FRAMES)
+        return length
+
+    async def get_replay_frame_bundles(self, score_token: int) -> list[FrameDataBundle]:
+        """Get all buffered replay frame bundles for a score token."""
+        key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
+        values = await self.redis.lrange(key, 0, -1)
+        bundles: list[FrameDataBundle] = []
+
+        for value in values:
+            try:
+                payload = json.loads(value)
+                bundles.append(FrameDataBundle.from_msgpack(payload))
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                logger.warning(
+                    "Failed to decode replay frame bundle for token %s: %s",
+                    score_token,
+                    exc,
+                )
+        return bundles
+
+    async def clear_replay_frame_bundles(self, score_token: int) -> None:
+        """Remove buffered replay frame bundles for a score token."""
+        key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
+        await self.redis.delete(key)
+
+    async def count_replay_frame_bundles(self, score_token: int) -> int:
+        """Return the buffered replay bundle count for a score token."""
+        key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
+        return await self.redis.llen(key)
+
+    # =========================================================================
     # Watch Relationships (who is watching whom)
     # =========================================================================
 
@@ -351,6 +402,7 @@ class HubStateService:
             f"{PREFIX_PLAYING}*",
             f"{PREFIX_WATCHING}*",
             f"{PREFIX_WATCHERS}*",
+            f"{PREFIX_REPLAY_FRAMES}*",
             PREFIX_PRESENCE_WATCHERS,
         ]
 
