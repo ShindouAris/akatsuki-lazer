@@ -651,3 +651,76 @@ async def test_download_score_replay_success(
         assert response.content
     finally:
         monkeypatch.setattr(settings, "replays_path", original_replays_path)
+
+
+@pytest.mark.asyncio
+async def test_pp_calculate_api_compatibility(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PP calculate endpoint keeps response shape stable across engine backends."""
+    beatmapset = BeatmapSet(
+        user_id=None,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Normal",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmap)
+    await db_session.commit()
+
+    async def fake_ensure_osu_file(self: object, _beatmap: Beatmap) -> str:
+        return "dummy.osu"
+
+    def fake_calculate_pp(self: object, _osu_file_path: str, _params: object) -> dict[str, float | None]:
+        return {
+            "pp": 123.456,
+            "stars": 6.78,
+            "pp_aim": None,
+            "pp_speed": None,
+            "pp_acc": None,
+            "pp_flashlight": None,
+            "effective_miss_count": None,
+            "pp_difficulty": None,
+            "aim": 3.2,
+            "speed": 2.9,
+            "flashlight": 0.0,
+        }
+
+    monkeypatch.setattr("app.api.v2.pp.BeatmapService.ensure_osu_file", fake_ensure_osu_file)
+    monkeypatch.setattr("app.api.v2.pp.PPService.calculate_pp", fake_calculate_pp)
+
+    response = await client.get(
+        "/api/v2/pp/calculate",
+        params={
+            "beatmap_id": beatmap.id,
+            "mode": 0,
+            "mods": 0,
+            "acc": 98.5,
+            "n300": 900,
+            "n100": 30,
+            "n50": 5,
+            "nmiss": 2,
+            "combo": 1200,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pp"] == 123.456
+    assert payload["stars"] == 6.78
+    assert payload["details"]["pp_aim"] is None
+    assert payload["details"]["pp_speed"] is None
+    assert payload["details"]["pp_acc"] is None
+    assert payload["details"]["pp_flashlight"] is None

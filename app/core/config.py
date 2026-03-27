@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     pp_validate_client_value: bool = True
     pp_tolerance: float = 0.1
     pp_use_server_value_on_mismatch: bool = False
+    pp_engine_strategy: Literal["legacy", "hybrid", "new"] = "legacy"
+    pp_new_engine_modes: str = "osu,taiko,mania"
+    pp_new_engine_fallback_legacy: bool = True
 
 
 @lru_cache

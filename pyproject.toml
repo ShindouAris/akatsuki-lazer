@@ -23,6 +23,7 @@ dependencies = [
     "aiofiles>=24.1.0",
     "python-socketio>=5.11.0",
     "colorama>=0.4.6",
+    "maturin>=1.12.6",
 ]
 
 [project.optional-dependencies]
