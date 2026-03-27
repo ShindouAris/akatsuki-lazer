@@ -89,7 +89,7 @@ def _score_to_response(
         beatmap_compact = BeatmapCompact(
             id=score.beatmap.id,
             beatmapset_id=score.beatmap.beatmapset_id,
-            difficulty_name=score.beatmap.version,
+            version=score.beatmap.version,
             mode=_mode_to_string(score.beatmap.mode),
             status=score.beatmap.status.name.lower(),
             difficulty_rating=score.beatmap.difficulty_rating,

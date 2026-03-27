@@ -85,7 +85,7 @@ class BeatmapCompact(BaseModel):
 
     id: int
     beatmapset_id: int
-    version: str = Field(alias="difficulty_name", default="")
+    version: str = Field(alias="version", default="")
     mode: str = "osu"
     status: str = "pending"
     difficulty_rating: float = 0.0

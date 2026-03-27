@@ -67,7 +67,7 @@ async def _get_room_response(db: DbSession, room: MultiplayerRoom) -> Multiplaye
                 beatmap_compact = BeatmapCompact(
                     id=beatmap.id,
                     beatmapset_id=beatmap.beatmapset_id,
-                    difficulty_name=beatmap.version,
+                    version=beatmap.version,
                     mode=_mode_to_string(beatmap.mode),
                     status=beatmap.status.name.lower(),
                     difficulty_rating=beatmap.difficulty_rating,

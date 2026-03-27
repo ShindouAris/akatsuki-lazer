@@ -57,7 +57,7 @@ def _beatmap_to_compact(beatmap: Beatmap) -> BeatmapCompact:
     return BeatmapCompact(
         id=beatmap.id,
         beatmapset_id=beatmap.beatmapset_id,
-        difficulty_name=beatmap.version,
+        version=beatmap.version,
         mode=_mode_to_string(beatmap.mode),
         status=_status_to_string(beatmap.status),
         difficulty_rating=beatmap.difficulty_rating,

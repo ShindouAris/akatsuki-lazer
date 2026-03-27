@@ -616,7 +616,7 @@ class BeatmapService:
             beatmaps.append({
                 "id": bm.get("id"),
                 "beatmapset_id": bs.get("id"),
-                "difficulty_name": bm.get("version", ""),
+                "version": bm.get("version", ""),
                 "mode": bm.get("mode", "osu"),
                 "status": bs.get("status", "pending"),
                 "difficulty_rating": bm.get("difficulty_rating", 0.0),
@@ -766,7 +766,7 @@ class BeatmapService:
             beatmaps.append({
                 "id": cg_bm.get("BeatmapID"),
                 "beatmapset_id": cg_set.get("SetID"),
-                "difficulty_name": cg_bm.get("DiffName", ""),
+                "version": cg_bm.get("DiffName", ""),
                 "mode": mode_map.get(cg_bm.get("Mode", 0), "osu"),
                 "status": status,
                 "difficulty_rating": cg_bm.get("DifficultyRating", 0.0),
