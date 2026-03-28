@@ -206,7 +206,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile=localhost-k
 4. Enjoy the ~~broken~~ dev server 🥀🥀
 
 > [!TIP]
-> IF anything is not working, dm on (Discord)[https://discord.chisadin.site] for support, issues is not present because this is a fork.
+> IF anything is not working, dm on [Discord](https://discord.chisadin.site) for support, issues is not present because this is a fork.
 
 ## API Endpoints (Implemented)
 
