@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,7 @@ from fastapi.websockets import WebSocketState
 
 from app.protocol.serialization import pack_invocation
 from app.protocol.serialization import pack_ping
+from app.protocol.serialization import pack_void_completion
 from app.protocol.serialization import serialize_argument
 from app.protocol.serialization import unpack_messages
 
@@ -176,11 +178,27 @@ async def send_completion(
         await websocket.send_text(json.dumps(completion_msg) + SIGNALR_RECORD_SEPARATOR)
 
 
+async def send_void_completion(
+    websocket: WebSocket,
+    use_messagepack: bool,
+    invocation_id: str | None,
+) -> None:
+    """Send a SignalR completion message without a result payload."""
+    if use_messagepack:
+        await websocket.send_bytes(pack_void_completion(invocation_id))
+    else:
+        completion_msg = {
+            "type": 3,
+            "invocationId": invocation_id,
+        }
+        await websocket.send_text(json.dumps(completion_msg) + SIGNALR_RECORD_SEPARATOR)
+
+
 async def run_message_loop(
     websocket: WebSocket,
     use_messagepack: bool,
     message_handler,
-    timeout: float = 30.0,
+    timeout: float = 15.0,
     on_ping=None,
 ) -> None:
     """Run the main SignalR message loop.
@@ -189,15 +207,26 @@ async def run_message_loop(
         websocket: The WebSocket connection
         use_messagepack: Whether to use MessagePack protocol
         message_handler: Async function(parsed_message) to handle invocations
-        timeout: Seconds to wait before sending keepalive ping
+        timeout: Maximum seconds between server keepalive pings
         on_ping: Optional async function() called on each ping (for TTL refresh etc)
     """
+    last_ping_sent_at = time.monotonic()
+
     while True:
         try:
             if websocket.client_state != WebSocketState.CONNECTED:
                 break
-            
-            message = await websocket.receive()
+
+            now = time.monotonic()
+            if now - last_ping_sent_at >= timeout:
+                if on_ping:
+                    await on_ping()
+                await send_ping(websocket, use_messagepack)
+                last_ping_sent_at = time.monotonic()
+
+            elapsed_since_ping = time.monotonic() - last_ping_sent_at
+            receive_timeout = max(0.1, timeout - elapsed_since_ping)
+            message = await asyncio.wait_for(websocket.receive(), timeout=receive_timeout)
 
             # Extract data based on protocol
             if use_messagepack:
@@ -219,6 +248,7 @@ async def run_message_loop(
                     if on_ping:
                         await on_ping()
                     await send_ping(websocket, use_messagepack)
+                    last_ping_sent_at = time.monotonic()
 
                 elif msg_type == 1:  # Invocation
                     await message_handler(parsed)
@@ -229,6 +259,7 @@ async def run_message_loop(
                 await on_ping()
             try:
                 await send_ping(websocket, use_messagepack)
+                last_ping_sent_at = time.monotonic()
             except Exception:
                 break
 

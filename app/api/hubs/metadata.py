@@ -183,7 +183,7 @@ async def metadata_websocket(websocket: WebSocket) -> None:
         # Handle handshake
         success, use_messagepack = await handle_handshake(websocket)
         if not success:
-            await websocket.close()
+            await websocket.close() # What if we didn't close on handshake failure? The client should timeout after a while, but we can also proactively close here.
             return
 
         conn.use_messagepack = use_messagepack

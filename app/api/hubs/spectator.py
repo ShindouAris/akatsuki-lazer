@@ -23,6 +23,7 @@ from app.api.hubs.base import generate_connection_id
 from app.api.hubs.base import handle_handshake
 from app.api.hubs.base import run_message_loop
 from app.api.hubs.base import send_invocation
+from app.api.hubs.base import send_void_completion
 from app.core.security import decode_token
 from app.protocol.models import FrameDataBundle
 from app.protocol.models import SpectatorState
@@ -114,6 +115,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=4401)
         return
 
+    logger.debug("Spectator hub authenticated websocket for user %s", token_data.user_id)
     await websocket.accept()
     connection_id = websocket.query_params.get("id", generate_connection_id())
     logger.info(f"Spectator hub connected: {connection_id}")
@@ -128,6 +130,12 @@ async def spectator_websocket(websocket: WebSocket) -> None:
     )
     connections[connection_id] = conn
     user_connections[conn.user_id] = connection_id
+    logger.debug(
+        "Spectator hub tracking connection %s for user %s (%s active connections)",
+        connection_id,
+        conn.user_id,
+        len(connections),
+    )
 
     # Track current play state locally (also persisted to Redis)
     current_state: SpectatorState | None = None
@@ -135,9 +143,11 @@ async def spectator_websocket(websocket: WebSocket) -> None:
 
     try:
         # Handle handshake
+        logger.debug("Spectator hub waiting for handshake: %s", connection_id)
         success, use_messagepack = await handle_handshake(websocket)
         if not success:
-            await websocket.close()
+            logger.warning("Spectator hub handshake failed: %s", connection_id)
+            await websocket.close() # What if we didn't close on handshake failure? The client should timeout after a while, but we can also proactively close here.
             return
 
         conn.use_messagepack = use_messagepack
@@ -149,17 +159,33 @@ async def spectator_websocket(websocket: WebSocket) -> None:
             logger.info(f"User {conn.user_id} reconnected, restoring {len(previous_watches)} watches")
             conn.watching_users = previous_watches
 
+        async def on_ping() -> None:
+            """Refresh Redis TTL for active spectator state while connection is alive."""
+            if conn.is_playing:
+                await hub_state.refresh_playing_ttl(conn.user_id)
+
+            if conn.watching_users:
+                await hub_state.refresh_user_watch_ttl(conn.user_id, conn.watching_users)
+
         async def handle_message(parsed: dict) -> None:
             nonlocal current_state, score_token
 
             target = parsed.get("target", "")
             args = parsed.get("arguments", [])
-            logger.info(f"Spectator hub: {target}({len(args)} args)")
+            invocation_id = parsed.get("invocationId")
+            logger.info(
+                "Spectator hub message from user %s: %s(%s args)",
+                conn.user_id,
+                target,
+                len(args),
+            )
 
             if target == "BeginPlaySession":
                 raw_score_token = args[0] if args else None
                 if raw_score_token is None:
                     logger.warning("BeginPlaySession missing score token from user %s", conn.user_id)
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
                     return
 
                 try:
@@ -170,6 +196,8 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                         raw_score_token,
                         conn.user_id,
                     )
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
                     return
 
                 state_data = args[1] if len(args) > 1 else {}
@@ -184,6 +212,9 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                 )
                 logger.info(f"User {conn.user_id} began playing beatmap {current_state.beatmap_id}")
 
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
             elif target == "SendFrameData":
                 frame_data = args[0] if args else {}
                 frame_bundle = FrameDataBundle.from_msgpack(frame_data)
@@ -196,12 +227,20 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                             buffered_count,
                             score_token,
                         )
+                else:
+                    logger.warning(
+                        "SendFrameData received without active score token from user %s",
+                        conn.user_id,
+                    )
 
                 await _broadcast_to_watchers(
                     conn.user_id,
                     "UserSentFrames",
                     [conn.user_id, frame_bundle.to_msgpack()],
                 )
+
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
 
             elif target == "EndPlaySession":
                 state_data = args[0] if args else {}
@@ -218,8 +257,29 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                 score_token = None
                 logger.info(f"User {conn.user_id} finished playing")
 
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
             elif target == "StartWatchingUser":
-                target_user_id = args[0] if args else 0
+                raw_target_user_id = args[0] if args else None
+                if raw_target_user_id is None:
+                    logger.warning("StartWatchingUser missing target user id from user %s", conn.user_id)
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    return
+
+                try:
+                    target_user_id = int(raw_target_user_id)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "StartWatchingUser invalid target user id %r from user %s",
+                        raw_target_user_id,
+                        conn.user_id,
+                    )
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    return
+
                 conn.watching_users.add(target_user_id)
 
                 await hub_state.add_watcher(conn.user_id, target_user_id)
@@ -244,22 +304,62 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                 )
                 logger.info(f"User {conn.user_id} started watching user {target_user_id}")
 
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
             elif target == "EndWatchingUser":
-                target_user_id = args[0] if args else 0
+                raw_target_user_id = args[0] if args else None
+                if raw_target_user_id is None:
+                    logger.warning("EndWatchingUser missing target user id from user %s", conn.user_id)
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    return
+
+                try:
+                    target_user_id = int(raw_target_user_id)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "EndWatchingUser invalid target user id %r from user %s",
+                        raw_target_user_id,
+                        conn.user_id,
+                    )
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    return
+
                 conn.watching_users.discard(target_user_id)
 
                 await hub_state.remove_watcher(conn.user_id, target_user_id)
                 await _send_to_user(target_user_id, "UserEndedWatching", [conn.user_id])
                 logger.info(f"User {conn.user_id} stopped watching user {target_user_id}")
 
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+            else:
+                logger.warning(
+                    "Spectator hub received unknown target %r from user %s",
+                    target,
+                    conn.user_id,
+                )
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
         # Run message loop
-        await run_message_loop(websocket, conn.use_messagepack, handle_message)
+        await run_message_loop(websocket, conn.use_messagepack, handle_message, on_ping=on_ping)
 
     except WebSocketDisconnect:
         logger.info(f"Spectator hub disconnected: {connection_id}")
     except Exception as e:
         logger.exception(f"Spectator hub error: {e}")
     finally:
+        logger.debug(
+            "Spectator hub cleanup starting for connection %s user %s (is_playing=%s, watching=%s)",
+            connection_id,
+            conn.user_id,
+            conn.is_playing,
+            len(conn.watching_users),
+        )
         # Cleanup Redis state
         if conn.is_playing:
             await hub_state.remove_playing(conn.user_id)
@@ -276,4 +376,9 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         if user_connections.get(conn.user_id) == connection_id:
             user_connections.pop(conn.user_id, None)
         connections.pop(connection_id, None)
+        logger.debug(
+            "Spectator hub cleanup complete for connection %s (%s active connections)",
+            connection_id,
+            len(connections),
+        )
         logger.info(f"Spectator hub closed: {connection_id}")

@@ -83,6 +83,15 @@ def pack_completion(invocation_id: str | None, result: Any) -> bytes:
     return _write_varint(len(packed)) + packed
 
 
+def pack_void_completion(invocation_id: str | None) -> bytes:
+    """Pack a SignalR completion message without a result payload."""
+    # SignalR completion format: [type=3, headers={}, invocationId, resultKind=2]
+    # resultKind: 1=error, 2=void, 3=non-void (has result)
+    message = [3, {}, invocation_id, 2]
+    packed = msgpack.packb(message)
+    return _write_varint(len(packed)) + packed
+
+
 def pack_ping() -> bytes:
     """Pack a SignalR ping message."""
     packed = msgpack.packb([6])

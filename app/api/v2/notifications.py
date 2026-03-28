@@ -15,6 +15,8 @@ from app.api.deps import CurrentUser
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+NOTIFICATIONS_KEEPALIVE_TIMEOUT_SECONDS = 30.0
+
 
 @router.get("/notifications")
 async def get_notifications(user: CurrentUser, request: Request) -> dict:
@@ -45,6 +47,7 @@ async def notifications_websocket(websocket: WebSocket) -> None:
     This uses a simple JSON protocol (not SignalR):
     - Messages are JSON objects with: event, data, error
     - No handshake required, just send/receive JSON
+    - Server sends periodic ping events while idle
     """
     await websocket.accept()
     logger.info("Notifications WebSocket connected")
@@ -56,8 +59,11 @@ async def notifications_websocket(websocket: WebSocket) -> None:
                 if websocket.client_state != WebSocketState.CONNECTED:
                     # WS is vanished into the socket abyss, stop trying to read
                     break
-                
-                message = await websocket.receive()
+
+                message = await asyncio.wait_for(
+                    websocket.receive(),
+                    timeout=NOTIFICATIONS_KEEPALIVE_TIMEOUT_SECONDS,
+                )
 
                 if "text" in message:
                     try:
@@ -79,7 +85,16 @@ async def notifications_websocket(websocket: WebSocket) -> None:
 
             except asyncio.TimeoutError:
                 # Send a keepalive/ping to keep connection alive
-                pass
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    break
+
+                await websocket.send_text(
+                    json.dumps({
+                        "event": "ping",
+                        "data": {},
+                    }),
+                )
+                logger.debug("Notifications WebSocket keepalive ping sent")
 
             except RuntimeError as e:
                 logger.warning(f"Runtime error in notifications WebSocket: {e}")

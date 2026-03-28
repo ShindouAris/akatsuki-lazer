@@ -279,6 +279,11 @@ class HubStateService:
         key = f"{PREFIX_PLAYING}{user_id}"
         return await self.redis.exists(key) > 0
 
+    async def refresh_playing_ttl(self, user_id: int) -> bool:
+        """Refresh a user's playing state TTL (keep-alive)."""
+        key = f"{PREFIX_PLAYING}{user_id}"
+        return await self.redis.expire(key, TTL_PLAYING)
+
     # =========================================================================
     # Replay Frame Buffers (Spectator -> Score Submission)
     # =========================================================================
@@ -387,6 +392,16 @@ class HubStateService:
         await self.redis.delete(watching_key)
 
         logger.debug(f"Cleared all watches for user {user_id}")
+
+    async def refresh_user_watch_ttl(self, watcher_user_id: int, target_user_ids: set[int]) -> None:
+        """Refresh TTL for a watcher's watch relationships (keep-alive)."""
+        watching_key = f"{PREFIX_WATCHING}{watcher_user_id}"
+        if target_user_ids:
+            await self.redis.expire(watching_key, TTL_WATCHING)
+
+        for target_user_id in target_user_ids:
+            watchers_key = f"{PREFIX_WATCHERS}{target_user_id}"
+            await self.redis.expire(watchers_key, TTL_WATCHING)
 
     # =========================================================================
     # Utility Methods
