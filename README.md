@@ -54,16 +54,16 @@ A Python implementation of the osu! lazer server backend.
 
 ### ❌ Not Yet Implemented
 
-**Forum System** - Complete forum functionality
-**Comments System** - User comments on content
-**Beatmap Discussions** - Beatmap-specific discussions
-**Matches System** - Match history and details
-**News System** - News posts and articles
-**Wiki System** - Documentation wiki
-**Score Pins** - Pinning scores to profile
-**Seasonal Backgrounds** - Seasonal theme system
-**Spotlights** - Featured content
-**Teams** - Team management
+* **Forum System** - Complete forum functionality
+* **Comments System** - User comments on content
+* **Beatmap Discussions** - Beatmap-specific discussions
+* **Matches System** - Match history and details
+* **News System** - News posts and articles
+* **Wiki System** - Documentation wiki
+* **Score Pins** - Pinning scores to profile
+* **Seasonal Backgrounds** - Seasonal theme system
+* **Spotlights** - Featured content
+* **Teams** - Team management
 
 ### Statistics
 - **Total OpenAPI endpoints**: 116
@@ -98,6 +98,8 @@ A Python implementation of the osu! lazer server backend.
 - Python 3.11+
 - SQLite (default) or PostgreSQL
 - uv (recommended) or pip
+- Redis (required for caching)
+- Docker (optional, for containerized deployment)
 
 ## Installation
 
@@ -154,39 +156,57 @@ The server will be available at:
 
 ## Connecting osu! lazer
 
-To connect the osu! lazer client to this server:
+Using my Modified Client:
+[Here](https://github.com/ShindouAris/osu.git)
 
-1. Modify `osu.Game/Online/LocalEndpointConfiguration.cs`:
+Then:
+
+1. Modify `osu.Game/Online/DevelopmentEndpointConfiguration.cs`:
 ```csharp
-public class LocalEndpointConfiguration : EndpointConfiguration
+namespace osu.Game.Online
 {
-    public LocalEndpointConfiguration()
+    public class DevelopmentEndpointConfiguration : EndpointConfiguration
     {
-        WebsiteUrl = APIUrl = @"http://localhost:8000";
-        APIClientSecret = @"change-me";
-        APIClientID = "5";
-        SpectatorUrl = "http://localhost:8000/spectator";
-        MultiplayerUrl = "http://localhost:8000/multiplayer";
-        MetadataUrl = "http://localhost:8000/metadata";
+        public DevelopmentEndpointConfiguration()
+        {
+            WebsiteUrl = APIUrl = @"https://localhost:8000";
+            APIClientSecret = @"change-ts"; // <- Modify this to match the OAUTH_CLIENT_SECRET in .env (this project)
+            APIClientID = "5";
+            SpectatorUrl = "https://localhost:8000/spectator";
+            MultiplayerUrl = "https://localhost:8000/multiplayer";
+            MetadataUrl = "https://localhost:8000/metadata";
+        }
     }
 }
+
 ```
 
-2. Update `OsuGameBase.cs` to use `LocalEndpointConfiguration`:
-```csharp
-public virtual EndpointConfiguration CreateEndpoints() => new LocalEndpointConfiguration();
-```
-
-3. For HTTP (non-HTTPS) connections, bypass SSL in `osu-framework`:
-   - Add SSL bypass to `SocketsHttpHandler` in `WebRequest.cs`
-   - Set environment variable: `OSU_INSECURE_REQUESTS=1`
-
-4. Build and run the client:
+2. To use all functionality, it is recommended to use https connection
 ```bash
-export OSU_INSECURE_REQUESTS=1
-dotnet build osu.Desktop.slnf
-dotnet run --project osu.Desktop
+# Install mkcert
+choco install mkcert   # Windows
+brew install mkcert    # macOS
+sudo apt install mkcert # Linux
+
+# Init CA local
+mkcert -install
+
+# Generate cert for localhost
+mkcert localhost 127.0.0.1 ::1
 ```
+
+> [!IMPORTANT]
+> The server must run with https so the game can connect to the hubs, otherwise it won't work!
+
+3. Run the client
+```bash
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile=localhost-key.pem --ssl-certfile=localhost.pem
+```
+
+4. Enjoy the ~~broken~~ dev server 🥀🥀
+
+> [!TIP]
+> IF anything is not working, dm on (Discord)[https://discord.chisadin.site] for support, issues is not present because this is a fork.
 
 ## API Endpoints (Implemented)
 
