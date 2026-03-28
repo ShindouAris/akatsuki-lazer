@@ -74,8 +74,13 @@ def _parse_status(status_str: str) -> BeatmapStatus:
     return status_map.get(status_str.lower(), BeatmapStatus.PENDING)
 
 
-def _parse_mode(mode_str: str) -> int:
+def _parse_mode(mode_str: str | int) -> int:
     """Convert mode string to mode int."""
+    if isinstance(mode_str, int):
+        if mode_str in {0, 1, 2, 3}:
+            return mode_str
+        return 0
+
     mode_map = {
         "osu": 0,
         "taiko": 1,
@@ -613,18 +618,20 @@ class BeatmapService:
         """Convert official osu! API beatmapset to our response format."""
         beatmaps = []
         for bm in bs.get("beatmaps", []):
+            mode_int = _parse_mode(bm.get("mode_int", bm.get("mode", "osu")))
             beatmaps.append({
                 "id": bm.get("id"),
                 "beatmapset_id": bs.get("id"),
                 "version": bm.get("version", ""),
-                "mode": bm.get("mode", "osu"),
+                "mode": mode_int,
+                "mode_int": mode_int,
                 "status": bs.get("status", "pending"),
                 "difficulty_rating": bm.get("difficulty_rating", 0.0),
                 "total_length": bm.get("total_length", 0),
                 "cs": bm.get("cs", 5.0),
                 "ar": bm.get("ar", 5.0),
-                "od": bm.get("accuracy", 5.0),
-                "hp": bm.get("drain", 5.0),
+                "accuracy": bm.get("accuracy", 5.0),
+                "drain": bm.get("drain", 5.0),
                 "bpm": bm.get("bpm", 0.0),
                 "max_combo": bm.get("max_combo"),
                 "checksum": bm.get("checksum"),
@@ -762,19 +769,19 @@ class BeatmapService:
 
         beatmaps = []
         for cg_bm in cg_set.get("ChildrenBeatmaps", []):
-            mode_map = {0: "osu", 1: "taiko", 2: "fruits", 3: "mania"}
             beatmaps.append({
                 "id": cg_bm.get("BeatmapID"),
                 "beatmapset_id": cg_set.get("SetID"),
                 "version": cg_bm.get("DiffName", ""),
-                "mode": mode_map.get(cg_bm.get("Mode", 0), "osu"),
+                "mode": cg_bm.get("Mode", 0),
+                "mode_int": cg_bm.get("Mode", 0),
                 "status": status,
                 "difficulty_rating": cg_bm.get("DifficultyRating", 0.0),
                 "total_length": cg_bm.get("TotalLength", 0),
                 "cs": cg_bm.get("CS", 5.0),
                 "ar": cg_bm.get("AR", 5.0),
-                "od": cg_bm.get("OD", 5.0),
-                "hp": cg_bm.get("HP", 5.0),
+                "accuracy": cg_bm.get("OD", 5.0),
+                "drain": cg_bm.get("HP", 5.0),
                 "bpm": cg_bm.get("BPM", 0.0),
                 "max_combo": cg_bm.get("MaxCombo"),
                 "checksum": cg_bm.get("FileMD5"),
