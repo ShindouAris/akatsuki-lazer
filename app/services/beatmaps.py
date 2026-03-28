@@ -219,7 +219,7 @@ class BeatmapService:
                 return None
 
         try:
-            with open(osz_file_path, "rb") as archive:
+            with zipfile.ZipFile(osz_file_path, "r") as archive:
                 for archive_name in archive.namelist():
                     if not archive_name.lower().endswith(".osu"):
                         continue
