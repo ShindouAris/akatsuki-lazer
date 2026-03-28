@@ -6,9 +6,11 @@ This hub handles:
 - Score processing notifications (UserScoreProcessed)
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from time import monotonic
 
 from fastapi import APIRouter
 from fastapi import Request
@@ -42,10 +44,87 @@ class SpectatorConnection(SignalRConnection):
     is_playing: bool = False
 
 
+@dataclass
+class PendingScoreProcessedEvent:
+    """Queued score processed event with retry scheduling metadata."""
+
+    score_id: int
+    next_attempt_at: float
+    expires_at: float
+    attempts: int = 0
+
+
 # In-memory connection tracking (WebSocket objects can't be serialized to Redis)
 # User state (playing, watches) is stored in Redis for persistence
 connections: dict[str, SpectatorConnection] = {}  # connection_id -> connection
-user_connections: dict[int, str] = {}  # user_id -> connection_id
+connections_by_user: dict[int, set[str]] = {}  # user_id -> connection_ids
+pending_score_processed_events: dict[int, dict[int, PendingScoreProcessedEvent]] = {}
+score_processed_dispatch_task: asyncio.Task | None = None
+
+SCORE_PROCESSED_INITIAL_DELAY_SECONDS = 0.5
+SCORE_PROCESSED_RETRY_INTERVAL_SECONDS = 0.5
+SCORE_PROCESSED_RETRY_WINDOW_SECONDS = 5.0
+
+
+def _remove_connection_for_user(user_id: int, connection_id: str) -> bool:
+    """Remove one connection from a user's connection set.
+
+    Returns True if the user still has at least one active connection after removal.
+    """
+    user_conn_ids = connections_by_user.get(user_id)
+    if not user_conn_ids:
+        return False
+
+    user_conn_ids.discard(connection_id)
+    if user_conn_ids:
+        connections_by_user[user_id] = user_conn_ids
+        return True
+
+    connections_by_user.pop(user_id, None)
+    return False
+
+
+def _ensure_score_processed_dispatch_task() -> None:
+    """Start background dispatcher for queued score processed events."""
+    global score_processed_dispatch_task
+
+    if score_processed_dispatch_task is None or score_processed_dispatch_task.done():
+        score_processed_dispatch_task = asyncio.create_task(_dispatch_pending_score_processed_events())
+
+
+async def _dispatch_pending_score_processed_events() -> None:
+    """Dispatch queued score processed events with retries for late client registration."""
+    global score_processed_dispatch_task
+
+    try:
+        while pending_score_processed_events:
+            now = monotonic()
+
+            for user_id, user_events in list(pending_score_processed_events.items()):
+                for score_id, event in list(user_events.items()):
+                    if now >= event.expires_at:
+                        user_events.pop(score_id, None)
+                        continue
+
+                    if now < event.next_attempt_at:
+                        continue
+
+                    delivered_count = await _send_to_user(user_id, "UserScoreProcessed", [user_id, score_id])
+                    event.attempts += 1
+                    event.next_attempt_at = now + SCORE_PROCESSED_RETRY_INTERVAL_SECONDS
+
+                    if delivered_count > 0:
+                        user_events.pop(score_id, None)
+
+                if not user_events:
+                    pending_score_processed_events.pop(user_id, None)
+
+            if pending_score_processed_events:
+                await asyncio.sleep(0.1)
+    except Exception as exc:
+        logger.exception("Score processed dispatcher failed: %s", exc)
+    finally:
+        score_processed_dispatch_task = None
 
 
 @router.post("/spectator/negotiate")
@@ -60,44 +139,71 @@ async def _broadcast_to_watchers(target_user_id: int, target: str, arguments: li
     watcher_user_ids = await hub_state.get_watchers(target_user_id)
 
     for watcher_user_id in watcher_user_ids:
-        conn_id = user_connections.get(watcher_user_id)
-        if not conn_id:
+        watcher_conn_ids = connections_by_user.get(watcher_user_id)
+        if not watcher_conn_ids:
             continue
 
+        for conn_id in list(watcher_conn_ids):
+            conn = connections.get(conn_id)
+            if not conn or not conn.websocket:
+                _remove_connection_for_user(watcher_user_id, conn_id)
+                continue
+
+            try:
+                await send_invocation(conn.websocket, conn.use_messagepack, target, arguments)
+            except Exception as e:
+                logger.warning(f"Failed to send to spectator watcher user {watcher_user_id}: {e}")
+                _remove_connection_for_user(watcher_user_id, conn_id)
+
+
+async def _send_to_user(user_id: int, target: str, arguments: list) -> int:
+    """Send a message to a specific user on the spectator hub."""
+    user_conn_ids = connections_by_user.get(user_id)
+    if not user_conn_ids:
+        return 0
+
+    delivered_count = 0
+
+    for conn_id in list(user_conn_ids):
         conn = connections.get(conn_id)
         if not conn or not conn.websocket:
+            _remove_connection_for_user(user_id, conn_id)
             continue
 
         try:
             await send_invocation(conn.websocket, conn.use_messagepack, target, arguments)
+            delivered_count += 1
         except Exception as e:
-            logger.warning(f"Failed to send to spectator watcher user {watcher_user_id}: {e}")
+            logger.warning(f"Failed to send to spectator user {user_id}: {e}")
+            _remove_connection_for_user(user_id, conn_id)
+
+    return delivered_count
 
 
-async def _send_to_user(user_id: int, target: str, arguments: list) -> None:
-    """Send a message to a specific user on the spectator hub."""
-    conn_id = user_connections.get(user_id)
-    if not conn_id:
-        return
-
-    conn = connections.get(conn_id)
-    if not conn or not conn.websocket:
-        return
-
-    try:
-        await send_invocation(conn.websocket, conn.use_messagepack, target, arguments)
-    except Exception as e:
-        logger.warning(f"Failed to send to spectator user {user_id}: {e}")
-
-
-async def send_user_score_processed(user_id: int, score_id: int) -> None:
+async def send_user_score_processed(user_id: int, score_id: int) -> int:
     """Notify a user that their score has been processed.
 
     This is called after score submission to trigger the client to
     fetch updated user statistics for the "Overall Ranking" panel.
     """
-    await _send_to_user(user_id, "UserScoreProcessed", [user_id, score_id])
-    logger.info(f"Sent UserScoreProcessed for user {user_id}, score {score_id}")
+    now = monotonic()
+    user_events = pending_score_processed_events.setdefault(user_id, {})
+    event = user_events.get(score_id)
+
+    if event is None:
+        event = PendingScoreProcessedEvent(
+            score_id=score_id,
+            next_attempt_at=now + SCORE_PROCESSED_INITIAL_DELAY_SECONDS,
+            expires_at=now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS,
+        )
+        user_events[score_id] = event
+    else:
+        event.expires_at = max(event.expires_at, now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS)
+        event.next_attempt_at = min(event.next_attempt_at, now + SCORE_PROCESSED_INITIAL_DELAY_SECONDS)
+
+    _ensure_score_processed_dispatch_task()
+
+    return len(user_events)
 
 
 @router.websocket("/spectator")
@@ -129,7 +235,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         user_id=token_data.user_id,
     )
     connections[connection_id] = conn
-    user_connections[conn.user_id] = connection_id
+    connections_by_user.setdefault(conn.user_id, set()).add(connection_id)
     logger.debug(
         "Spectator hub tracking connection %s for user %s (%s active connections)",
         connection_id,
@@ -370,11 +476,11 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                     [conn.user_id, current_state.to_msgpack()],
                 )
 
-        await hub_state.clear_user_watches(conn.user_id)
+        has_other_connections = _remove_connection_for_user(conn.user_id, connection_id)
+        if not has_other_connections:
+            await hub_state.clear_user_watches(conn.user_id)
 
         # Remove from in-memory tracking
-        if user_connections.get(conn.user_id) == connection_id:
-            user_connections.pop(conn.user_id, None)
         connections.pop(connection_id, None)
         logger.debug(
             "Spectator hub cleanup complete for connection %s (%s active connections)",

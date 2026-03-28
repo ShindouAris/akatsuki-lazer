@@ -131,14 +131,14 @@ def _mode_to_string(mode: GameMode) -> str:
     }.get(mode, "osu")
 
 
-def _string_to_mode(mode: str) -> GameMode:
+def _string_to_mode(mode: str) -> GameMode | None:
     """Convert string to GameMode enum."""
     return {
         "osu": GameMode.OSU,
         "taiko": GameMode.TAIKO,
         "fruits": GameMode.CATCH,
         "mania": GameMode.MANIA,
-    }.get(mode, GameMode.OSU)
+    }.get(mode)
 
 
 def _get_user_statistics(user: User, mode: GameMode) -> UserStatisticsResponse:
@@ -268,6 +268,13 @@ async def get_user_mode(
         )
 
     mode_enum = _string_to_mode(mode)
+    if mode_enum is None:
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error=f"Invalid ruleset: {mode}",
+            message=f"Invalid ruleset: {mode}",
+        )
+
     return _user_to_response(user, mode_enum)
 
 

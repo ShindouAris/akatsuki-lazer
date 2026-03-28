@@ -6,6 +6,7 @@ from datetime import UTC
 from datetime import datetime
 
 from fastapi import APIRouter
+from fastapi import BackgroundTasks
 from fastapi import Query
 from fastapi import status
 from fastapi.responses import FileResponse
@@ -124,6 +125,7 @@ def _score_to_response(
         ended_at=score.ended_at,
         has_replay=score.has_replay,
         rank_global=rank_global,
+        position=rank_global,
         user=user_compact,
         beatmap=beatmap_compact,
     )
@@ -238,8 +240,10 @@ async def get_beatmap_scores(
     result = await db.execute(query)
     scores = result.scalars().all()
 
+    score_responses = [_score_to_response(s) for s in scores]
+
     return {
-        "scores": [_score_to_response(s) for s in scores],
+        "scores": score_responses,
     }
 
 
@@ -260,6 +264,7 @@ async def get_beatmap_solo_scores(
 async def submit_score(
     db: DbSession,
     user: ActiveUser,
+    background_tasks: BackgroundTasks,
     beatmap_id: int,
     token_id: int,
     score_data: ScoreSubmissionRequest,
@@ -389,6 +394,12 @@ async def submit_score(
     )
     db.add(score)
     await db.flush()  # Get score ID
+    if score.id <= 0:
+        raise OsuError(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error="Invalid score id generated",
+            message="Invalid score id generated",
+        )
 
     # Mark token as used by setting score_id
     token.score_id = score.id
@@ -408,7 +419,7 @@ async def submit_score(
 
         if is_failed_score:
             await hub_state.clear_replay_frame_bundles(token.id)
-            logger.debug(
+            logger.info(
                 "Skipping replay persistence for failed score %s (token %s)",
                 score.id,
                 token.id,
@@ -434,13 +445,19 @@ async def submit_score(
                 await hub_state.clear_replay_frame_bundles(token.id)
                 logger.info("Stored replay for score %s at %s", score.id, replay_path)
         else:
-            logger.debug("No replay frame bundles buffered for token %s", token.id)
+            logger.info("No replay frame bundles buffered for token %s", token.id)
     except Exception as exc:
         logger.warning("Replay persistence failed for score token %s: %s", token.id, exc)
 
     stats = await get_user_statistics(db, user.id, GameMode(token.ruleset_id))
     if stats is not None:
         await update_user_statistics(db, stats, score)
+    else:
+        logger.warning(
+            "Missing user statistics row for user=%s mode=%s during score submit",
+            user.id,
+            token.ruleset_id,
+        )
 
     if score_data.passed and ranked:
         await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))
@@ -468,10 +485,15 @@ async def submit_score(
     result = await db.execute(select(User).where(User.id == user.id))
     score.user = result.scalar_one()
 
-    # Notify client that score has been processed (for "Overall Ranking" panel)
-    await send_user_score_processed(user.id, score.id)
+    response = _score_to_response(score, rank_global=rank_global)
 
-    return _score_to_response(score, rank_global=rank_global)
+    # Commit first so UserScoreProcessed is emitted only for persisted scores.
+    await db.commit()
+
+    # Queue post-submit score-processed notification after HTTP response is sent.
+    background_tasks.add_task(send_user_score_processed, user.id, score.id)
+
+    return response
 
 
 @router.get("/users/{user_id}/scores/{type}")

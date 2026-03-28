@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -182,6 +183,62 @@ async def test_get_user_by_id(
     assert data["username"] == "testuser"
     assert "statistics" in data
     assert "grade_counts" in data["statistics"]
+
+
+@pytest.mark.asyncio
+async def test_get_user_mode_invalid_ruleset_returns_400(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Invalid ruleset short names should return 400 instead of silent osu fallback."""
+    user = User(
+        username="invalidmodeuser",
+        email="invalidmode@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    for mode in GameMode:
+        stats = UserStatistics(user_id=user.id, mode=mode)
+        db_session.add(stats)
+    await db_session.commit()
+
+    response = await client.get(f"/api/v2/users/{user.id}/not-a-ruleset", params={"key": "id"})
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"] == "Invalid ruleset: not-a-ruleset"
+
+
+@pytest.mark.asyncio
+async def test_get_user_mode_by_id_returns_stats_payload(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Mode-specific user endpoint should return stats (including hit_accuracy) without server errors."""
+    user = User(
+        username="validmodeuser",
+        email="validmode@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    for mode in GameMode:
+        stats = UserStatistics(user_id=user.id, mode=mode)
+        db_session.add(stats)
+    await db_session.commit()
+
+    response = await client.get(f"/api/v2/users/{user.id}/osu", params={"key": "id"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == user.id
+    assert "statistics" in payload
+    assert "hit_accuracy" in payload["statistics"]
 
 
 @pytest.mark.asyncio
@@ -501,6 +558,101 @@ async def test_lookup_beatmapset_by_beatmap_id(
     assert data["creator"] == beatmapset.creator
     assert len(data["beatmaps"]) == 1
     assert data["beatmaps"][0]["id"] == beatmap.id
+
+
+@pytest.mark.asyncio
+async def test_submit_score_response_contains_id_and_position(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Solo score submit response should include a positive id and position-compatible field."""
+
+    async def fake_ensure_osu_file(self, beatmap: Beatmap) -> str | None:  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr("app.api.v2.scores.BeatmapService.ensure_osu_file", fake_ensure_osu_file)
+
+    user = User(
+        username="scorecontract",
+        email="scorecontract@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    for mode in GameMode:
+        db_session.add(UserStatistics(user_id=user.id, mode=mode))
+
+    beatmapset = BeatmapSet(
+        user_id=None,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Insane",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+        checksum="abc123",
+    )
+    db_session.add(beatmap)
+    await db_session.commit()
+
+    token_pair = create_token_pair(user.id, ["*"])
+    headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+    token_response = await client.post(
+        f"/api/v2/beatmaps/{beatmap.id}/solo/scores",
+        data={
+            "version_hash": "build-test",
+            "beatmap_hash": "abc123",
+            "ruleset_id": 0,
+        },
+        headers=headers,
+    )
+    assert token_response.status_code == 200
+    token_payload = token_response.json()
+    assert token_payload["id"] > 0
+
+    submit_response = await client.put(
+        f"/api/v2/beatmaps/{beatmap.id}/solo/scores/{token_payload['id']}",
+        headers=headers,
+        json={
+            "accuracy": 98.12,
+            "max_combo": 543,
+            "mods": [],
+            "passed": True,
+            "rank": "A",
+            "statistics": {"great": 500, "ok": 20, "miss": 1},
+            "maximum_statistics": {"great": 521},
+            "total_score": 1234567,
+            "total_score_without_mods": 1234567,
+            "ruleset_id": 0,
+            "pp": 111.11,
+            "pauses": [],
+        },
+    )
+
+    assert submit_response.status_code == 200
+    payload = submit_response.json()
+    assert payload["id"] > 0
+    assert "position" in payload
+    assert payload["position"] == payload["rank_global"]
+
+    stored_score = (
+        await db_session.execute(
+            select(Score).where(Score.id == payload["id"]),
+        )
+    ).scalar_one_or_none()
+    assert stored_score is not None
 
 
 @pytest.mark.asyncio

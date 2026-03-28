@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 from fastapi import Form
 from fastapi import HTTPException
@@ -28,6 +30,7 @@ from app.models.user import GameMode
 from app.services.beatmaps import BeatmapService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _mode_to_string(mode: GameMode) -> str:
@@ -498,7 +501,6 @@ async def create_score_token(
         )
         db.add(token)
         await db.flush()
-
         return ScoreTokenResponse(
             id=token.id,
             created_at=token.created_at,

@@ -181,6 +181,7 @@ class ScoreResponse(BaseModel):
     ended_at: datetime | None = None
     has_replay: bool = False
     rank_global: int | None = None  # Position on beatmap leaderboard
+    position: int | None = None  # Compatibility alias for lazer score submit contract
     rank_country: int | None = None  # Position on country leaderboard
     user: UserCompact | None = None
     beatmap: BeatmapCompact | None = None
