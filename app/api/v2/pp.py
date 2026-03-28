@@ -3,13 +3,13 @@
 from typing import Any
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from pydantic import BaseModel
 from pydantic import Field
 
 from app.api.deps import DbSession
+from app.core.error import OsuError
 from app.models.user import GameMode
 from app.services.beatmaps import BeatmapService
 from app.services.pp import PPCalculationParams
@@ -111,19 +111,28 @@ async def _calculate_pp(
     try:
         mode_enum = GameMode(mode)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid mode") from exc
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Invalid mode",
+            message="Invalid mode",
+        ) from exc
 
     service = BeatmapService(db)
     try:
         beatmap = await service.get_beatmap(beatmap_id)
         if beatmap is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Beatmap not found")
+            raise OsuError(
+                code=status.HTTP_404_NOT_FOUND,
+                error="Beatmap not found",
+                message="Beatmap not found",
+            )
 
         osu_file_path = await service.ensure_osu_file(beatmap)
         if not osu_file_path:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Beatmap .osu file is unavailable for PP calculation",
+            raise OsuError(
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                error="Beatmap .osu file is unavailable for PP calculation",
+                message="Beatmap .osu file is unavailable for PP calculation",
             )
     finally:
         await service.close()
@@ -131,9 +140,10 @@ async def _calculate_pp(
     try:
         pp_service = PPService()
     except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="PP calculation engine is unavailable",
+        raise OsuError(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            error="PP calculation engine is unavailable",
+            message="PP calculation engine is unavailable",
         ) from exc
 
     params = PPCalculationParams(

@@ -1,7 +1,6 @@
 """User beatmaps endpoints."""
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from sqlalchemy import and_
@@ -11,6 +10,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession
 from app.api.v2.schemas import BeatmapsetResponse
+from app.core.error import OsuError
 from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
 from app.models.beatmap import BeatmapStatus
@@ -42,9 +42,10 @@ async def get_user_beatmaps(
     # Verify user exists
     user = await db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Map type to status or query
@@ -117,9 +118,14 @@ async def get_user_beatmaps(
             .offset(offset)
         )
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid type: {type_lower}. Must be one of: favourite, ranked, loved, pending, graveyard",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error=(
+                f"Invalid type: {type_lower}. Must be one of: favourite, ranked, loved, pending, graveyard"
+            ),
+            message=(
+                f"Invalid type: {type_lower}. Must be one of: favourite, ranked, loved, pending, graveyard"
+            ),
         )
 
     beatmapsets = result.scalars().all()

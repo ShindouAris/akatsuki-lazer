@@ -66,9 +66,8 @@ class UserResponse(UserCompact):
     statistics: UserStatisticsResponse | None = None
 
 
-class UserRelationResponse(BaseModel):
-    """User relation response (friend or block)."""
 
+class Relation(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     target_id: int
@@ -76,6 +75,9 @@ class UserRelationResponse(BaseModel):
     mutual: bool = False
     target: UserCompact | None = None
 
+class UserRelationResponse(BaseModel):
+    """User relation response (friend or block)."""
+    user_relation: Relation
 
 # Beatmap schemas
 class BeatmapCompact(BaseModel):
@@ -86,16 +88,21 @@ class BeatmapCompact(BaseModel):
     id: int
     beatmapset_id: int
     version: str = Field(alias="version", default="")
-    mode: str = "osu"
+    mode: int = 0
+    mode_int: int = 0
     status: str = "pending"
     difficulty_rating: float = 0.0
     total_length: int = 0
     cs: float = 5.0
     ar: float = 5.0
-    accuracy: float = Field(alias="od", default=5.0)
-    drain: float = Field(alias="hp", default=5.0)
+    accuracy: float = Field( default=5.0)
+    drain: float = Field( default=5.0)
     bpm: float = 0.0
     max_combo: int | None = None
+    user_id: int = 0
+    count_circles: int = 0
+    count_sliders: int = 0
+    count_spinners: int = 0
     checksum: str | None = None
 
 

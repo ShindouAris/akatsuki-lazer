@@ -1,7 +1,6 @@
 """Friends endpoints."""
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import status
 from sqlalchemy import and_
 from sqlalchemy import select
@@ -9,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
-from app.api.v2.schemas import UserCompact
+from app.api.v2.schemas import Relation, UserCompact
 from app.api.v2.schemas import UserRelationResponse
+from app.core.error import OsuError
 from app.models.user import User
 from app.models.user import UserRelation
 
@@ -55,7 +55,7 @@ async def get_friends(user: CurrentUser, db: DbSession) -> list[UserRelationResp
             ),
         ),
     )
-    relations = result.fetchall()
+    relations: list[tuple[UserRelation, User]] = result.fetchall()
 
     # Get mutual friend IDs
     mutual_ids = await _get_mutual_friend_ids(db, user.id)
@@ -63,7 +63,7 @@ async def get_friends(user: CurrentUser, db: DbSession) -> list[UserRelationResp
     friends = []
     for relation, target_user in relations:
         friends.append(
-            UserRelationResponse(
+            Relation(
                 target_id=relation.target_id,
                 relation_type="friend",
                 mutual=relation.target_id in mutual_ids,
@@ -85,17 +85,19 @@ async def add_friend(
 
     # Can't friend yourself
     if target_id == user.id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Cannot add yourself as a friend",
+        raise OsuError(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error="Cannot add yourself as a friend",
+            message="Cannot add yourself as a friend",
         )
 
     # Check if target user exists and is active
     target_user = await db.get(User, target_id)
     if not target_user or not target_user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Check friend limit
@@ -111,9 +113,10 @@ async def add_friend(
     friend_count = len(friend_count_result.fetchall())
 
     if friend_count >= user.max_friends:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Friend limit reached ({user.max_friends})",
+        raise OsuError(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error=f"Friend limit reached ({user.max_friends})",
+            message=f"Friend limit reached ({user.max_friends})",
         )
 
     # Check if relation already exists
@@ -129,9 +132,11 @@ async def add_friend(
 
     if relation:
         if relation.friend:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Already friends with this user",
+            raise OsuError(
+                code=status.HTTP_403_FORBIDDEN,
+                error="Already friends",
+                hint="The specified user is already in your friends list.",
+                message="Friend relation already exists"
             )
         # Was blocked, now becoming friend - remove block
         relation.friend = True
@@ -159,12 +164,14 @@ async def add_friend(
     )
     is_mutual = mutual_result.scalar_one_or_none() is not None
 
-    return UserRelationResponse(
-        target_id=target_id,
-        relation_type="friend",
-        mutual=is_mutual,
-        target=UserCompact.model_validate(target_user),
-    )
+    return {
+        "user_relation": Relation(
+            target_id=target_id,
+            relation_type="friend",
+            mutual=is_mutual,
+            target=UserCompact.model_validate(target_user),
+        )
+    } 
 
 
 @router.delete("/friends/{target_id}")
@@ -187,9 +194,10 @@ async def remove_friend(
     relation = result.scalar_one_or_none()
 
     if not relation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Friend not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Friend not found",
+            message="Friend not found",
         )
 
     # If they're also blocked, just remove friend status; otherwise delete

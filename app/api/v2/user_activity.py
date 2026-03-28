@@ -1,7 +1,6 @@
 """User activity and kudosu endpoints."""
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from sqlalchemy import desc
@@ -10,6 +9,7 @@ from sqlalchemy import select
 from app.api.deps import DbSession
 from app.api.v2.schemas import KudosuHistoryResponse
 from app.api.v2.schemas import UserActivityResponse
+from app.core.error import OsuError
 from app.models.beatmap import Beatmap
 from app.models.user import KudosuHistory
 from app.models.user import User
@@ -36,9 +36,10 @@ async def get_user_recent_activity(
     # Verify user exists
     user = await db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Get recent activities
@@ -82,9 +83,10 @@ async def get_user_kudosu_history(
     # Verify user exists
     user = await db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Get kudosu history

@@ -6,7 +6,6 @@ from datetime import UTC
 from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from fastapi.responses import FileResponse
@@ -24,6 +23,7 @@ from app.api.v2.schemas import ScoreResponse
 from app.api.v2.schemas import ScoreSubmissionRequest
 from app.api.v2.schemas import UserCompact
 from app.core.config import get_settings
+from app.core.error import OsuError
 from app.models.beatmap import BeatmapStatus
 from app.models.score import Score
 from app.models.score import ScoreToken
@@ -140,9 +140,10 @@ async def get_score(db: DbSession, score_id: int) -> ScoreResponse:
     score = result.scalar_one_or_none()
 
     if not score:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Score not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Score not found",
+            message="Score not found",
         )
 
     # Calculate rank on leaderboard
@@ -174,17 +175,19 @@ async def download_score_replay(
     score = result.scalar_one_or_none()
 
     if not score or not score.has_replay:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Replay not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Replay not found",
+            message="Replay not found",
         )
 
     replay_service = ReplayStorageService()
     replay_path = replay_service.get_score_replay_path(score.id)
     if not replay_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Replay file missing",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Replay file missing",
+            message="Replay file missing",
         )
 
     return FileResponse(
@@ -211,9 +214,10 @@ async def get_beatmap_scores(
         await service.close()
 
     if not beatmap:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Beatmap not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Beatmap not found",
+            message="Beatmap not found",
         )
 
     # Build query
@@ -275,9 +279,10 @@ async def submit_score(
     token = result.scalar_one_or_none()
 
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Score token not found or already used",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Score token not found or already used",
+            message="Score token not found or already used",
         )
 
     # Note: Official implementation doesn't expire tokens, so we skip expiry check
@@ -293,9 +298,10 @@ async def submit_score(
         await service.close()
 
     if not beatmap:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Beatmap not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Beatmap not found",
+            message="Beatmap not found",
         )
 
     # Determine if score should be ranked (anything with leaderboard)
@@ -483,9 +489,10 @@ async def get_user_scores(
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Build query based on type
@@ -505,9 +512,10 @@ async def get_user_scores(
         # TODO: Implement first place scores
         query = query.where(Score.passed.is_(True)).order_by(Score.ended_at.desc())
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid score type: {type}",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error=f"Invalid score type: {type}",
+            message=f"Invalid score type: {type}",
         )
 
     query = query.offset(offset).limit(limit)

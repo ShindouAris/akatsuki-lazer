@@ -463,6 +463,47 @@ async def test_get_beatmaps_by_ids_for_multiplayer(
 
 
 @pytest.mark.asyncio
+async def test_lookup_beatmapset_by_beatmap_id(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Beatmapset lookup endpoint resolves beatmap_id into a beatmapset response."""
+    beatmapset = BeatmapSet(
+        user_id=None,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Insane",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmap)
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/v2/beatmapsets/lookup",
+        params={"beatmap_id": beatmap.id},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == beatmapset.id
+    assert data["artist"] == beatmapset.artist
+    assert data["title"] == beatmapset.title
+    assert data["creator"] == beatmapset.creator
+    assert len(data["beatmaps"]) == 1
+    assert data["beatmaps"][0]["id"] == beatmap.id
+
+
+@pytest.mark.asyncio
 async def test_get_beatmaps_requires_ids(client: AsyncClient) -> None:
     """Beatmaps list endpoint returns 400 when no ids are provided."""
     response = await client.get("/api/v2/beatmaps/")

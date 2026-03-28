@@ -7,7 +7,6 @@ from typing import Union
 
 from fastapi import APIRouter
 from fastapi import Form
-from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi import status
 from pydantic import BaseModel
@@ -15,6 +14,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession
 from app.api.v2.schemas import UserResponse
+from app.core.error import OsuError
 from app.core.security import create_token_pair
 from app.core.security import decode_token
 from app.core.security import verify_password
@@ -107,16 +107,18 @@ async def get_token(
 
     elif grant_type == "refresh_token":
         if not refresh_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Refresh token required",
+            raise OsuError(
+                code=status.HTTP_400_BAD_REQUEST,
+                error="Refresh token required",
+                message="Refresh token required",
             )
 
         token_data = decode_token(refresh_token)
         if token_data is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token",
+            raise OsuError(
+                code=status.HTTP_401_UNAUTHORIZED,
+                error="Invalid refresh token",
+                message="Invalid refresh token",
             )
 
         # Verify user still exists and is active
@@ -124,9 +126,10 @@ async def get_token(
         user = result.scalar_one_or_none()
 
         if not user or user.is_restricted:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or restricted",
+            raise OsuError(
+                code=status.HTTP_401_UNAUTHORIZED,
+                error="User not found or restricted",
+                message="User not found or restricted",
             )
 
         # Create new token pair
@@ -142,9 +145,10 @@ async def get_token(
         # Client credentials flow - used for service-to-service
         # For now, return a limited token
         if not client_id or not client_secret:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Client credentials required",
+            raise OsuError(
+                code=status.HTTP_400_BAD_REQUEST,
+                error="Client credentials required",
+                message="Client credentials required",
             )
 
         # TODO: Validate client credentials against oauth_clients table
@@ -163,9 +167,10 @@ async def get_token(
         )
 
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported grant type: {grant_type}",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error=f"Unsupported grant type: {grant_type}",
+            message=f"Unsupported grant type: {grant_type}",
         )
 
 

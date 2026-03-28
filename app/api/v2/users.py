@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter
 from fastapi import Form
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from fastapi.responses import JSONResponse
@@ -17,6 +16,7 @@ from app.api.v2.schemas import RankHistoryResponse
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
+from app.core.error import OsuError
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserRelation
@@ -234,9 +234,10 @@ async def get_user(
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     return _user_to_response(user)
@@ -260,9 +261,10 @@ async def get_user_mode(
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     mode_enum = _string_to_mode(mode)
@@ -281,17 +283,19 @@ async def lookup_user(
     elif username:
         result = await db.execute(select(User).where(User.username == username))
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Must provide id or username",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Must provide id or username",
+            message="Must provide id or username",
         )
 
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     return UserCompact(
@@ -314,17 +318,19 @@ async def block_user(
     """Block a user."""
     # Can't block yourself
     if user_id == user.id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Cannot block yourself",
+        raise OsuError(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error="Cannot block yourself",
+            message="Cannot block yourself",
         )
 
     # Check if target user exists and is active
     target = await db.get(User, user_id)
     if not target or not target.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     # Check block limit
@@ -339,9 +345,10 @@ async def block_user(
     block_count = len(block_count_result.fetchall())
 
     if block_count >= user.max_blocks:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Block limit reached ({user.max_blocks})",
+        raise OsuError(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error=f"Block limit reached ({user.max_blocks})",
+            message=f"Block limit reached ({user.max_blocks})",
         )
 
     # Check if relation already exists
@@ -357,9 +364,10 @@ async def block_user(
 
     if relation:
         if relation.foe:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Already blocking this user",
+            raise OsuError(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                error="Already blocking this user",
+                message="Already blocking this user",
             )
         # Was friend, now becoming blocked - remove friend, add block
         relation.friend = False
@@ -397,9 +405,10 @@ async def unblock_user(
     relation = result.scalar_one_or_none()
 
     if not relation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Block not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Block not found",
+            message="Block not found",
         )
 
     # If they're also a friend, just remove block status; otherwise delete

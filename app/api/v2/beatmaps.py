@@ -39,6 +39,15 @@ def _mode_to_string(mode: GameMode) -> str:
         GameMode.MANIA: "mania",
     }.get(mode, "osu")
 
+def _mode_to_int(mode: GameMode) -> int:
+    """Convert GameMode enum to int."""
+    return {
+        GameMode.OSU: 0,
+        GameMode.TAIKO: 1,
+        GameMode.CATCH: 2,
+        GameMode.MANIA: 3,
+    }.get(mode, 0)
+
 
 def _status_to_string(status: BeatmapStatus) -> str:
     """Convert BeatmapStatus enum to string."""
@@ -59,17 +68,21 @@ def _beatmap_to_compact(beatmap: Beatmap) -> BeatmapCompact:
         id=beatmap.id,
         beatmapset_id=beatmap.beatmapset_id,
         version=beatmap.version,
-        mode=_mode_to_string(beatmap.mode),
+        mode = _mode_to_int(beatmap.mode),
+        mode_int=_mode_to_int(beatmap.mode),
         status=_status_to_string(beatmap.status),
         difficulty_rating=beatmap.difficulty_rating,
         total_length=beatmap.total_length,
         cs=beatmap.cs,
         ar=beatmap.ar,
-        od=beatmap.od,
-        hp=beatmap.hp,
+        accuracy=beatmap.od,
+        drain=beatmap.hp,
         bpm=beatmap.bpm,
         max_combo=beatmap.max_combo,
         checksum=beatmap.checksum,
+        count_circles=beatmap.count_circles,
+        count_sliders=beatmap.count_sliders,
+        count_spinners=beatmap.count_spinners,
     )
 
 
@@ -89,12 +102,39 @@ def _beatmapset_to_compact(beatmapset: BeatmapSet) -> BeatmapsetCompact:
     )
 
 
-@router.get("/beatmaps/lookup", response_model=BeatmapResponse)
+def _beatmapset_to_response(beatmapset: BeatmapSet) -> BeatmapsetResponse:
+    """Convert BeatmapSet model to BeatmapsetResponse."""
+    return BeatmapsetResponse(
+        id=beatmapset.id,
+        artist=beatmapset.artist,
+        artist_unicode=beatmapset.artist_unicode,
+        title=beatmapset.title,
+        title_unicode=beatmapset.title_unicode,
+        creator=beatmapset.creator,
+        user_id=beatmapset.user_id,
+        status=_status_to_string(beatmapset.status),
+        play_count=beatmapset.play_count,
+        favourite_count=beatmapset.favourite_count,
+        source=beatmapset.source,
+        tags=beatmapset.tags,
+        ranked_date=beatmapset.ranked_date,
+        submitted_date=beatmapset.submitted_date,
+        last_updated=beatmapset.last_updated,
+        bpm=beatmapset.bpm,
+        preview_url=beatmapset.preview_url,
+        has_video=beatmapset.has_video,
+        has_storyboard=beatmapset.has_storyboard,
+        nsfw=beatmapset.nsfw,
+        beatmaps=[_beatmap_to_compact(beatmap) for beatmap in beatmapset.beatmaps],
+    )
+
+
+@router.get("/beatmapset/lookup", response_model=BeatmapResponse)
 async def lookup_beatmap(
     db: DbSession,
     checksum: str | None = Query(None),
     filename: str | None = Query(None),
-    id: int | None = Query(None),
+    beatmap_id: int | None = Query(None),
 ) -> BeatmapResponse:
     """Lookup a beatmap by checksum, filename, or ID.
 
@@ -106,16 +146,16 @@ async def lookup_beatmap(
     try:
         beatmap: Beatmap | None = None
 
-        if id:
+        if beatmap_id:
             # ID lookup supports both mirror and osu! API
-            beatmap = await service.get_beatmap(id)
+            beatmap = await service.get_beatmap(beatmap_id)
         elif checksum:
             # Checksum lookup - local DB first, then osu! API (not mirror)
             beatmap = await service.get_beatmap_by_checksum(checksum, filename)
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Must provide id, checksum, or filename",
+                detail="Must provide beatmap_id, checksum, or filename",
             )
 
         if not beatmap:
@@ -349,6 +389,33 @@ async def search_beatmapsets(
     # Use API-based search (mirror service)
     return await _search_beatmapsets_api(db, q, m, s, sort, cursor_string)
 
+@router.get("/beatmapsets/lookup", response_model=BeatmapsetResponse)
+async def lookup_beatmapset(
+    db: DbSession,
+    beatmap_id: int = Query(...),
+) -> BeatmapsetResponse:
+    """Lookup a beatmapset by beatmap ID."""
+    service = BeatmapService(db)
+
+    try:
+        beatmap = await service.get_beatmap(beatmap_id)
+        if not beatmap:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Beatmap not found",
+            )
+
+        beatmapset = await service.get_beatmapset(beatmap.beatmapset_id)
+        if not beatmapset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Beatmapset not found",
+            )
+
+        return _beatmapset_to_response(beatmapset)
+    finally:
+        await service.close()
+
 
 @router.get("/beatmapsets/{beatmapset_id}", response_model=BeatmapsetResponse)
 async def get_beatmapset(db: DbSession, beatmapset_id: int) -> BeatmapsetResponse:
@@ -367,31 +434,7 @@ async def get_beatmapset(db: DbSession, beatmapset_id: int) -> BeatmapsetRespons
                 detail="Beatmapset not found",
             )
 
-        beatmaps = [_beatmap_to_compact(b) for b in beatmapset.beatmaps]
-
-        return BeatmapsetResponse(
-            id=beatmapset.id,
-            artist=beatmapset.artist,
-            artist_unicode=beatmapset.artist_unicode,
-            title=beatmapset.title,
-            title_unicode=beatmapset.title_unicode,
-            creator=beatmapset.creator,
-            user_id=beatmapset.user_id,
-            status=_status_to_string(beatmapset.status),
-            play_count=beatmapset.play_count,
-            favourite_count=beatmapset.favourite_count,
-            source=beatmapset.source,
-            tags=beatmapset.tags,
-            ranked_date=beatmapset.ranked_date,
-            submitted_date=beatmapset.submitted_date,
-            last_updated=beatmapset.last_updated,
-            bpm=beatmapset.bpm,
-            preview_url=beatmapset.preview_url,
-            has_video=beatmapset.has_video,
-            has_storyboard=beatmapset.has_storyboard,
-            nsfw=beatmapset.nsfw,
-            beatmaps=beatmaps,
-        )
+        return _beatmapset_to_response(beatmapset)
     finally:
         await service.close()
 

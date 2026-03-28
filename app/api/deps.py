@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 from typing import Annotated
 
 from fastapi import Depends
-from fastapi import HTTPException
 from fastapi import Request
 from fastapi import status
 from fastapi.security import OAuth2PasswordBearer
@@ -12,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.error import OsuError
 from app.core.security import decode_token
 from app.models.user import User
 
@@ -47,10 +47,10 @@ async def get_current_user_required(
 ) -> User:
     """Get the current authenticated user (required)."""
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
+        raise OsuError(
+            code=status.HTTP_401_UNAUTHORIZED,
+            error="Not authenticated",
+            message="Not authenticated",
         )
     return user
 
@@ -60,9 +60,10 @@ async def get_current_active_user(
 ) -> User:
     """Get the current active (non-restricted) user."""
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Inactive user",
+        raise OsuError(
+            code=status.HTTP_403_FORBIDDEN,
+            error="Inactive user",
+            message="Inactive user",
         )
     return user
 

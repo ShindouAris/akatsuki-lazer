@@ -3,7 +3,6 @@
 import json
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from sqlalchemy import and_
@@ -20,6 +19,7 @@ from app.api.v2.schemas import RankingsResponse
 from app.api.v2.schemas import ScoreResponse
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserScoreAggregateResponse
+from app.core.error import OsuError
 from app.models.score import Score
 from app.models.user import GameMode
 from app.models.user import User
@@ -123,22 +123,25 @@ async def get_rankings(
     """Get rankings for a ruleset and ranking type."""
     mode = _string_to_mode(ruleset)
     if mode is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid ruleset",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Invalid ruleset",
+            message="Invalid ruleset",
         )
 
     ranking_type = type.lower()
     if ranking_type not in {"performance", "score"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid ranking type",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Invalid ranking type",
+            message="Invalid ranking type",
         )
 
     if filter != "all":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only filter=all is supported",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Only filter=all is supported",
+            message="Only filter=all is supported",
         )
 
     per_page = 50
@@ -220,26 +223,29 @@ async def get_user_score_rank(
     """Get aggregated ranking info for a user's score."""
     user = await db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
         )
 
     ruleset_id: int | None = None
     if mode:
         mode_enum = _string_to_mode(mode)
         if mode_enum is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid mode",
+            raise OsuError(
+                code=status.HTTP_400_BAD_REQUEST,
+                error="Invalid mode",
+                message="Invalid mode",
             )
         ruleset_id = int(mode_enum)
 
     score_type = (scoreType or "best").lower()
     if score_type not in {"best", "firsts", "recent"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid scoreType",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Invalid scoreType",
+            message="Invalid scoreType",
         )
 
     base_query = (
@@ -289,9 +295,10 @@ async def get_user_score_rank(
     score = result.scalar_one_or_none()
 
     if score is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No ranked score found for this user",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="No ranked score found for this user",
+            message="No ranked score found for this user",
         )
 
     position_result = await db.execute(

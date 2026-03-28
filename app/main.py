@@ -3,6 +3,8 @@
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+
+from app.core.error import OsuError
 from .logger import LOGGING_CONFIG, setup_logger
 
 from fastapi import FastAPI
@@ -84,6 +86,16 @@ app.include_router(spectator_router, tags=["SignalR"])
 app.include_router(metadata_router, tags=["SignalR"])
 app.include_router(multiplayer_router, tags=["SignalR"])
 
+@app.exception_handler(OsuError)
+async def custom_handler(request: Request, exc: OsuError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.code,
+        content={
+            "error": exc.error,
+            "hint": exc.hint,
+            "message": exc.message
+        }
+    )
 
 @app.get("/")
 async def root() -> dict:

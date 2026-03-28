@@ -3,7 +3,6 @@
 import json
 
 from fastapi import APIRouter
-from fastapi import HTTPException
 from fastapi import Query
 from fastapi import status
 from sqlalchemy import select
@@ -17,6 +16,7 @@ from app.api.v2.schemas import MultiplayerPlaylistItemResponse
 from app.api.v2.schemas import MultiplayerRoomCreateRequest
 from app.api.v2.schemas import MultiplayerRoomResponse
 from app.api.v2.schemas import UserCompact
+from app.core.error import OsuError
 from app.models.multiplayer import MultiplayerPlaylistItem
 from app.models.multiplayer import MultiplayerRoom
 from app.models.multiplayer import RoomStatus
@@ -178,9 +178,10 @@ async def get_room(db: DbSession, room_id: int) -> MultiplayerRoomResponse:
     room = result.scalar_one_or_none()
 
     if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Room not found",
+            message="Room not found",
         )
 
     return await _get_room_response(db, room)
@@ -251,9 +252,10 @@ async def join_room(
 ) -> MultiplayerRoomResponse:
     """Join a multiplayer room."""
     if user.id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot join room as another user",
+        raise OsuError(
+            code=status.HTTP_403_FORBIDDEN,
+            error="Cannot join room as another user",
+            message="Cannot join room as another user",
         )
 
     result = await db.execute(
@@ -264,27 +266,31 @@ async def join_room(
     room = result.scalar_one_or_none()
 
     if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Room not found",
+            message="Room not found",
         )
 
     if room.status == RoomStatus.CLOSED:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Room is closed",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Room is closed",
+            message="Room is closed",
         )
 
     if room.password and room.password != password:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid password",
+        raise OsuError(
+            code=status.HTTP_403_FORBIDDEN,
+            error="Invalid password",
+            message="Invalid password",
         )
 
     if room.participant_count >= room.max_participants:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Room is full",
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Room is full",
+            message="Room is full",
         )
 
     # TODO: Track room participants properly
@@ -302,9 +308,10 @@ async def leave_room(
 ) -> None:
     """Leave a multiplayer room."""
     if user.id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot leave room as another user",
+        raise OsuError(
+            code=status.HTTP_403_FORBIDDEN,
+            error="Cannot leave room as another user",
+            message="Cannot leave room as another user",
         )
 
     result = await db.execute(
@@ -313,9 +320,10 @@ async def leave_room(
     room = result.scalar_one_or_none()
 
     if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Room not found",
+            message="Room not found",
         )
 
     # TODO: Track room participants properly
@@ -339,9 +347,10 @@ async def get_room_leaderboard(
     room = result.scalar_one_or_none()
 
     if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found",
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="Room not found",
+            message="Room not found",
         )
 
     # TODO: Implement proper leaderboard aggregation
