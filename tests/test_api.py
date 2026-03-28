@@ -520,6 +520,48 @@ async def test_get_beatmaps_by_ids_for_multiplayer(
 
 
 @pytest.mark.asyncio
+async def test_lookup_beatmap_by_checksum_and_filename(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Beatmap lookup endpoint accepts lazer checksum+filename requests."""
+    beatmapset = BeatmapSet(
+        user_id=None,
+        artist="artist",
+        title="title",
+        creator="creator",
+        status=BeatmapStatus.RANKED,
+    )
+    db_session.add(beatmapset)
+    await db_session.flush()
+
+    beatmap = Beatmap(
+        beatmapset_id=beatmapset.id,
+        user_id=None,
+        version="Insane",
+        mode=GameMode.OSU,
+        status=BeatmapStatus.RANKED,
+        checksum="94be7259e99197f6a06ca9d05607ed0e",
+    )
+    db_session.add(beatmap)
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/v2/beatmaps/lookup",
+        params={
+            "checksum": beatmap.checksum,
+            "filename": "Pierce The Veil - Hell Above (Cut Ver.) (killian) [-digital's Extra].osu",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == beatmap.id
+    assert data["checksum"] == beatmap.checksum
+    assert data["beatmapset"]["id"] == beatmapset.id
+
+
+@pytest.mark.asyncio
 async def test_lookup_beatmapset_by_beatmap_id(
     client: AsyncClient,
     db_session: AsyncSession,

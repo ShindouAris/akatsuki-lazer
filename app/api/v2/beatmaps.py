@@ -132,7 +132,8 @@ def _beatmapset_to_response(beatmapset: BeatmapSet) -> BeatmapsetResponse:
     )
 
 
-@router.get("/beatmapset/lookup", response_model=BeatmapResponse)
+@router.get("/beatmaps/lookup", response_model=BeatmapResponse)
+@router.get("/beatmapset/lookup", response_model=BeatmapResponse, include_in_schema=False)
 async def lookup_beatmap(
     db: DbSession,
     checksum: str | None = Query(None),
