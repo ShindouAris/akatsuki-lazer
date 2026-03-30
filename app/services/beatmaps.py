@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
 from app.models.beatmap import BeatmapStatus
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -896,9 +897,17 @@ class BeatmapService:
         if existing:
             return existing
 
+        user_id = await self._resolve_existing_user_id(data.get("user_id"))
+        if data.get("user_id") is not None and user_id is None:
+            logger.debug(
+                "Ignoring missing beatmapset owner user_id=%s for beatmapset=%s",
+                data.get("user_id"),
+                data["id"],
+            )
+
         beatmapset = BeatmapSet(
             id=data["id"],
-            user_id=data.get("user_id"),
+            user_id=user_id,
             artist=data.get("artist", ""),
             artist_unicode=data.get("artist_unicode"),
             title=data.get("title", ""),
@@ -956,3 +965,19 @@ class BeatmapService:
             f"Cached beatmapset {beatmapset.id} with {len(beatmaps_data)} beatmaps",
         )
         return beatmapset
+
+    async def _resolve_existing_user_id(self, user_id: Any) -> int | None:
+        """Resolve user_id to an existing user or return None."""
+        if user_id is None or self.db is None:
+            return None
+
+        try:
+            parsed_user_id = int(user_id)
+        except (TypeError, ValueError):
+            return None
+
+        result = await self.db.execute(select(User.id).where(User.id == parsed_user_id))
+        if result.scalar_one_or_none() is None:
+            return None
+
+        return parsed_user_id

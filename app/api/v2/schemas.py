@@ -117,7 +117,7 @@ class BeatmapsetCompact(BaseModel):
     title: str
     title_unicode: str | None = None
     creator: str
-    user_id: int | None = None
+    user_id: int = 0
     status: str = "pending"
     play_count: int = 0
     favourite_count: int = 0
