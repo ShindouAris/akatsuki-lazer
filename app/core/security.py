@@ -9,7 +9,7 @@ import bcrypt
 from jose import JWTError
 from jose import jwt
 from pydantic import BaseModel
-
+from pathlib import Path
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -30,6 +30,16 @@ class TokenPair(BaseModel):
     token_type: str = "Bearer"
     expires_in: int
     refresh_token: str | None = None
+
+pj_root = Path(__file__).parent.parent.parent # core -> app -> parent
+private_key_path = Path(f"{pj_root}/cert/private.pem")
+public_key_path = Path(f"{pj_root}/cert/public.pem")
+
+with open(private_key_path, "r") as f:
+    PRIVATE_KEY = f.read()
+
+with open(public_key_path, "r") as f:
+    PUBLIC_KEY = f.read()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -57,8 +67,8 @@ def create_access_token(
         expire = datetime.now(UTC) + timedelta(
             minutes=settings.access_token_expire_minutes,
         )
-    to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    to_encode.update({"exp": expire, "type": "access", "aud": settings.oauth_client_id})
+    return jwt.encode(to_encode, PRIVATE_KEY, algorithm="RS256")
 
 
 def create_refresh_token(
@@ -75,7 +85,7 @@ def create_refresh_token(
     else:
         expire = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
     to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+    return jwt.encode(to_encode, PRIVATE_KEY, algorithm="RS256")
 
 
 def decode_token(token: str) -> TokenData | None:
@@ -83,8 +93,9 @@ def decode_token(token: str) -> TokenData | None:
     try:
         payload = jwt.decode(
             token,
-            settings.secret_key,
-            algorithms=[settings.algorithm],
+            PUBLIC_KEY,
+            algorithms=["RS256"],
+            audience=settings.oauth_client_id,
         )
         sub = payload.get("sub")
         if sub is None:
