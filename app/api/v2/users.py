@@ -215,6 +215,80 @@ def _user_to_response(user: User, mode: GameMode | None = None) -> UserResponse:
         statistics=stats,
     )
 
+@router.get("/users/")
+async def get_user_by_id(
+    db: DbSession,
+    ids: list[int] | list[str] = Query(..., description="User IDs or usernames", alias="ids[]"),
+) -> dict[str, list[UserResponse]]:
+    """Get a user by ID or username."""
+    if len(ids) > 50:
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Too many IDs",
+            message="Maximum 50 IDs allowed",
+        )
+    # Determine lookup method
+    result = await db.execute(select(User).where(User.id.in_(ids)))
+    users = result.scalars().all()
+
+    if len(users) != len(ids):
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="One or more users not found",
+        )
+
+    return {
+        "users": [_user_to_response(u) for u in users]
+    }
+
+
+@router.get("/users/lookup/", response_model=UserCompact)
+@router.get("/users/lookup", response_model=UserCompact, include_in_schema=False)
+async def lookup_user(
+    db: DbSession,
+    id: int | None = Query(None),
+    username: str | None = Query(None),
+    ids_bracket: list[int] = Query(default_factory=list, alias="ids[]"),
+    ids: list[int] = Query(default_factory=list),
+) -> UserCompact:
+    """Lookup a user by ID or username."""
+    resolved_id = id
+    if resolved_id is None:
+        requested_ids = [*ids_bracket, *ids]
+        if requested_ids:
+            resolved_id = requested_ids[0]
+
+    if resolved_id is not None:
+        result = await db.execute(select(User).where(User.id == resolved_id))
+    elif username:
+        result = await db.execute(select(User).where(User.username == username))
+    else:
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Must provide id or username",
+            message="Must provide id or username",
+        )
+
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise OsuError(
+            code=status.HTTP_404_NOT_FOUND,
+            error="User not found",
+            message="User not found",
+        )
+
+    return UserCompact(
+        id=user.id,
+        username=user.username,
+        avatar_url=user.avatar_url,
+        country_code=user.country_acronym,
+        is_active=user.is_active,
+        is_bot=user.is_bot,
+        is_supporter=user.is_supporter,
+    )
+
 
 @router.get("/users/{user_id}", response_model=UserResponse)
 @router.get("/users/{user_id}/", response_model=UserResponse, include_in_schema=False)
@@ -276,44 +350,6 @@ async def get_user_mode(
         )
 
     return _user_to_response(user, mode_enum)
-
-
-@router.get("/users/lookup", response_model=UserCompact)
-async def lookup_user(
-    db: DbSession,
-    id: int | None = Query(None),
-    username: str | None = Query(None),
-) -> UserCompact:
-    """Lookup a user by ID or username."""
-    if id:
-        result = await db.execute(select(User).where(User.id == id))
-    elif username:
-        result = await db.execute(select(User).where(User.username == username))
-    else:
-        raise OsuError(
-            code=status.HTTP_400_BAD_REQUEST,
-            error="Must provide id or username",
-            message="Must provide id or username",
-        )
-
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise OsuError(
-            code=status.HTTP_404_NOT_FOUND,
-            error="User not found",
-            message="User not found",
-        )
-
-    return UserCompact(
-        id=user.id,
-        username=user.username,
-        avatar_url=user.avatar_url,
-        country_code=user.country_acronym,
-        is_active=user.is_active,
-        is_bot=user.is_bot,
-        is_supporter=user.is_supporter,
-    )
 
 
 @router.post("/users/{user_id}/block")

@@ -186,6 +186,33 @@ async def test_get_user_by_id(
 
 
 @pytest.mark.asyncio
+async def test_lookup_user_with_ids_bracket_trailing_slash(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Lookup endpoint should support ids[] with trailing slash requests."""
+    user = User(
+        username="lookupidsuser",
+        email="lookupids@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    response = await client.get(
+        "/api/v2/users/lookup/",
+        params=[("ids[]", user.id)],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == user.id
+    assert payload["username"] == user.username
+
+
+@pytest.mark.asyncio
 async def test_get_user_mode_invalid_ruleset_returns_400(
     client: AsyncClient,
     db_session: AsyncSession,

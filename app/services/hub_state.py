@@ -36,12 +36,18 @@ PREFIX_WATCHING = "hub:watching:"  # {user_id} -> Set of watched user IDs
 PREFIX_WATCHERS = "hub:watchers:"  # {user_id} -> Set of watcher user IDs (reverse index)
 PREFIX_PRESENCE_WATCHERS = "hub:presence_watchers"  # Set of user IDs watching presence
 PREFIX_REPLAY_FRAMES = "hub:replay:frames:"  # {score_token} -> list of FrameDataBundle payloads
+PREFIX_BEATMAP_UPDATE_COUNTER = "hub:metadata:beatmap_updates:counter"  # Monotonic queue id
+PREFIX_BEATMAP_UPDATE_ENTRY = "hub:metadata:beatmap_updates:entry:"  # {queue_id} -> JSON list of beatmapset ids
+PREFIX_BEATMAP_UPDATE_IDS = "hub:metadata:beatmap_updates:ids"  # Sorted set of known queue IDs
 
 # TTLs for automatic expiration
 TTL_PRESENCE = timedelta(minutes=5)  # Presence expires after 5 min of no updates
 TTL_PLAYING = timedelta(hours=2)  # Playing state expires after 2 hours max
 TTL_WATCHING = timedelta(hours=1)  # Watch relationships expire after 1 hour
 TTL_REPLAY_FRAMES = timedelta(hours=1)  # Replay buffers expire if score is never submitted
+TTL_BEATMAP_UPDATES = timedelta(hours=24)  # Keep beatmap update queue history for GetChangesSince
+
+MAX_BEATMAP_UPDATE_ENTRIES = 5000
 
 
 @dataclass
@@ -218,7 +224,7 @@ class HubStateService:
 
     async def is_watching_presence(self, user_id: int) -> bool:
         """Check if user is watching presence."""
-        return await self.redis.sismember(PREFIX_PRESENCE_WATCHERS, user_id)
+        return bool(await self.redis.sismember(PREFIX_PRESENCE_WATCHERS, str(user_id)))
 
     async def get_presence_watchers(self) -> set[int]:
         """Get all users watching presence."""
@@ -333,6 +339,110 @@ class HubStateService:
         return await self.redis.llen(key)
 
     # =========================================================================
+    # Metadata Beatmap Update Queue
+    # =========================================================================
+
+    async def append_beatmap_updates(self, beatmap_set_ids: list[int]) -> int:
+        """Append a beatmap update batch and return its queue id.
+
+        Queue ids are monotonic and shared across all metadata clients.
+        """
+        normalized_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for raw_id in beatmap_set_ids:
+            try:
+                beatmap_set_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+
+            if beatmap_set_id <= 0 or beatmap_set_id in seen_ids:
+                continue
+
+            seen_ids.add(beatmap_set_id)
+            normalized_ids.append(beatmap_set_id)
+
+        queue_id = int(await self.redis.incr(PREFIX_BEATMAP_UPDATE_COUNTER))
+        payload_key = f"{PREFIX_BEATMAP_UPDATE_ENTRY}{queue_id}"
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.setex(payload_key, TTL_BEATMAP_UPDATES, json.dumps(normalized_ids))
+            pipe.zadd(PREFIX_BEATMAP_UPDATE_IDS, {str(queue_id): float(queue_id)})
+            pipe.expire(PREFIX_BEATMAP_UPDATE_IDS, TTL_BEATMAP_UPDATES)
+            pipe.zcard(PREFIX_BEATMAP_UPDATE_IDS)
+            _, _, _, total_entries = await pipe.execute()
+
+        if int(total_entries) > MAX_BEATMAP_UPDATE_ENTRIES:
+            trim_count = int(total_entries) - MAX_BEATMAP_UPDATE_ENTRIES
+            old_queue_ids = await self.redis.zrange(PREFIX_BEATMAP_UPDATE_IDS, 0, trim_count - 1)
+
+            if old_queue_ids:
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    pipe.zremrangebyrank(PREFIX_BEATMAP_UPDATE_IDS, 0, trim_count - 1)
+                    for old_queue_id in old_queue_ids:
+                        pipe.delete(f"{PREFIX_BEATMAP_UPDATE_ENTRY}{old_queue_id}")
+                    await pipe.execute()
+
+        return queue_id
+
+    async def get_beatmap_updates_since(self, queue_id: int, limit: int = 500) -> tuple[list[int], int]:
+        """Return beatmapset updates after a queue id and the latest delivered queue id."""
+        try:
+            last_seen_queue_id = max(0, int(queue_id))
+        except (TypeError, ValueError):
+            last_seen_queue_id = 0
+
+        queue_id_rows = await self.redis.zrangebyscore(
+            PREFIX_BEATMAP_UPDATE_IDS,
+            min=f"({last_seen_queue_id}",
+            max="+inf",
+            start=0,
+            num=max(1, limit),
+        )
+
+        if not queue_id_rows:
+            return [], last_seen_queue_id
+
+        payload_keys = [f"{PREFIX_BEATMAP_UPDATE_ENTRY}{row}" for row in queue_id_rows]
+        payload_rows = await self.redis.mget(payload_keys)
+
+        beatmap_set_ids: list[int] = []
+        seen_ids: set[int] = set()
+        latest_queue_id = last_seen_queue_id
+
+        for raw_queue_id, payload in zip(queue_id_rows, payload_rows, strict=False):
+            try:
+                parsed_queue_id = int(raw_queue_id)
+            except (TypeError, ValueError):
+                continue
+
+            latest_queue_id = max(latest_queue_id, parsed_queue_id)
+
+            if not payload:
+                continue
+
+            try:
+                update_ids = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                continue
+
+            if not isinstance(update_ids, list):
+                continue
+
+            for update_id in update_ids:
+                try:
+                    beatmap_set_id = int(update_id)
+                except (TypeError, ValueError):
+                    continue
+
+                if beatmap_set_id <= 0 or beatmap_set_id in seen_ids:
+                    continue
+
+                seen_ids.add(beatmap_set_id)
+                beatmap_set_ids.append(beatmap_set_id)
+
+        return beatmap_set_ids, latest_queue_id
+
+    # =========================================================================
     # Watch Relationships (who is watching whom)
     # =========================================================================
 
@@ -418,7 +528,10 @@ class HubStateService:
             f"{PREFIX_WATCHING}*",
             f"{PREFIX_WATCHERS}*",
             f"{PREFIX_REPLAY_FRAMES}*",
+            f"{PREFIX_BEATMAP_UPDATE_ENTRY}*",
             PREFIX_PRESENCE_WATCHERS,
+            PREFIX_BEATMAP_UPDATE_COUNTER,
+            PREFIX_BEATMAP_UPDATE_IDS,
         ]
 
         total_deleted = 0

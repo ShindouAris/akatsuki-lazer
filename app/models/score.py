@@ -119,6 +119,12 @@ class ScoreToken(Base):
     )
     ruleset_id: Mapped[int] = mapped_column(Integer, default=0)
     build_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    playlist_item_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("multiplayer_playlist_items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Link to score once submitted (presence indicates token is used)
     score_id: Mapped[int | None] = mapped_column(

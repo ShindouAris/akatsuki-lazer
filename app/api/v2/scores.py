@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import ActiveUser
 from app.api.deps import DbSession
+from app.api.hubs.metadata import send_multiplayer_room_score_set
 from app.api.hubs.spectator import send_user_score_processed
 from app.api.v2.schemas import BeatmapCompact
 from app.api.v2.schemas import ModResponse
@@ -26,10 +27,13 @@ from app.api.v2.schemas import UserCompact
 from app.core.config import get_settings
 from app.core.error import OsuError
 from app.models.beatmap import BeatmapStatus
+from app.models.multiplayer import MultiplayerPlaylistItem
+from app.models.multiplayer import MultiplayerScore
 from app.models.score import Score
 from app.models.score import ScoreToken
 from app.models.user import GameMode
 from app.models.user import User
+from app.protocol.models import MultiplayerRoomScoreSetEvent
 from app.services.beatmaps import BeatmapService
 from app.services.hub_state import get_hub_state_service
 from app.services.pp import PPService
@@ -61,6 +65,76 @@ def _normalize_to_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+async def _create_multiplayer_room_score_event(
+    db: DbSession,
+    token: ScoreToken,
+    score: Score,
+) -> MultiplayerRoomScoreSetEvent | None:
+    """Create multiplayer score linkage and return a metadata room event payload."""
+    if token.playlist_item_id is None or score.id is None:
+        return None
+
+    playlist_result = await db.execute(
+        select(MultiplayerPlaylistItem.room_id).where(MultiplayerPlaylistItem.id == token.playlist_item_id),
+    )
+    room_id = playlist_result.scalar_one_or_none()
+    if room_id is None:
+        return None
+
+    multiplayer_score = MultiplayerScore(
+        room_id=int(room_id),
+        playlist_item_id=int(token.playlist_item_id),
+        user_id=int(score.user_id),
+        score_id=int(score.id),
+        total_score=int(score.total_score),
+        accuracy=float(score.accuracy),
+        pp=score.pp,
+        max_combo=int(score.max_combo),
+        rank=score.rank,
+        passed=bool(score.passed),
+    )
+    db.add(multiplayer_score)
+    await db.flush()
+
+    if not score.passed:
+        return None
+
+    best_score_result = await db.execute(
+        select(MultiplayerScore.score_id)
+        .where(
+            MultiplayerScore.playlist_item_id == token.playlist_item_id,
+            MultiplayerScore.user_id == score.user_id,
+            MultiplayerScore.passed.is_(True),
+        )
+        .order_by(MultiplayerScore.total_score.desc(), MultiplayerScore.score_id.desc())
+        .limit(1),
+    )
+    best_score_id = best_score_result.scalar_one_or_none()
+
+    new_rank: int | None = None
+    if best_score_id == score.id:
+        rank_result = await db.execute(
+            select(func.count(MultiplayerScore.id) + 1)
+            .where(
+                MultiplayerScore.playlist_item_id == token.playlist_item_id,
+                MultiplayerScore.passed.is_(True),
+                MultiplayerScore.total_score > score.total_score,
+            ),
+        )
+        rank_value = rank_result.scalar_one_or_none()
+        if rank_value is not None:
+            new_rank = int(rank_value)
+
+    return MultiplayerRoomScoreSetEvent(
+        room_id=int(room_id),
+        playlist_item_id=int(token.playlist_item_id),
+        score_id=int(score.id),
+        user_id=int(score.user_id),
+        total_score=int(score.total_score),
+        new_rank=new_rank,
+    )
 
 
 def _score_to_response(
@@ -404,6 +478,8 @@ async def submit_score(
     # Mark token as used by setting score_id
     token.score_id = score.id
 
+    multiplayer_room_score_event = await _create_multiplayer_room_score_event(db, token, score)
+
     # Update beatmap play count
     beatmap.play_count += 1
     if score_data.passed:
@@ -492,6 +568,9 @@ async def submit_score(
 
     # Queue post-submit score-processed notification after HTTP response is sent.
     background_tasks.add_task(send_user_score_processed, user.id, score.id)
+
+    if multiplayer_room_score_event is not None:
+        background_tasks.add_task(send_multiplayer_room_score_set, multiplayer_room_score_event)
 
     return response
 

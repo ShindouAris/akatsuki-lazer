@@ -25,6 +25,7 @@ from app.api.v2.schemas import ScoreTokenResponse
 from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
 from app.models.beatmap import BeatmapStatus
+from app.models.multiplayer import MultiplayerPlaylistItem
 from app.models.score import ScoreToken
 from app.models.user import GameMode
 from app.services.beatmaps import BeatmapService
@@ -468,6 +469,7 @@ async def create_score_token(
     beatmap_hash: str = Form(...),
     ruleset_id: int = Form(0),
     version_hash: str = Form(None),  # Client sends this but we don't use it currently
+    playlist_item_id: int | None = Form(default=None, alias="playlistItemId"),
 ) -> ScoreTokenResponse:
     """Request a score token for score submission.
 
@@ -493,12 +495,31 @@ async def create_score_token(
                 detail="Beatmap hash mismatch",
             )
 
+        resolved_playlist_item_id: int | None = None
+        if playlist_item_id is not None:
+            playlist_result = await db.execute(
+                select(MultiplayerPlaylistItem).where(MultiplayerPlaylistItem.id == playlist_item_id),
+            )
+            playlist_item = playlist_result.scalar_one_or_none()
+            if playlist_item is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Playlist item not found",
+                )
+            if playlist_item.beatmap_id != beatmap_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Playlist item does not match beatmap",
+                )
+            resolved_playlist_item_id = playlist_item.id
+
         # Create score token (no expires_at - official tokens don't expire)
         token = ScoreToken(
             user_id=user.id,
             beatmap_id=beatmap_id,
             ruleset_id=ruleset_id,
             build_id=None,  # Could be set from version_hash lookup
+            playlist_item_id=resolved_playlist_item_id,
         )
         db.add(token)
         await db.flush()

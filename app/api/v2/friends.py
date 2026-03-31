@@ -41,7 +41,7 @@ async def _get_mutual_friend_ids(db: AsyncSession, user_id: int) -> set[int]:
 
 
 @router.get("/friends")
-async def get_friends(user: CurrentUser, db: DbSession) -> list[UserRelationResponse]:
+async def get_friends(user: CurrentUser, db: DbSession) -> list[Relation]:
     """Get user's friends list."""
     # Get all friend relations for this user
     result = await db.execute(
@@ -64,12 +64,14 @@ async def get_friends(user: CurrentUser, db: DbSession) -> list[UserRelationResp
     for relation, target_user in relations:
         friends.append(
             Relation(
-                target_id=relation.target_id,
-                relation_type="friend",
-                mutual=relation.target_id in mutual_ids,
-                target=UserCompact.model_validate(target_user),
-            ),
+                    target_id=relation.target_id,
+                    relation_type="friend",
+                    mutual=relation.target_id in mutual_ids,
+                    target=UserCompact.model_validate(target_user),
+            )
         )
+
+    print(friends)
 
     return friends
 
