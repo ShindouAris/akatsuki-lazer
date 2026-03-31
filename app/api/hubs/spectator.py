@@ -17,6 +17,7 @@ from fastapi import Request
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from app.api.hubs.base import SignalRConnection
 from app.api.hubs.base import create_negotiate_response
@@ -26,7 +27,11 @@ from app.api.hubs.base import handle_handshake
 from app.api.hubs.base import run_message_loop
 from app.api.hubs.base import send_invocation
 from app.api.hubs.base import send_void_completion
+from app.core.database import async_session_maker
 from app.core.security import decode_token
+from app.models.score import ScoreToken
+from app.models.user import User
+from app.protocol.enums import SpectatedUserState
 from app.protocol.models import FrameDataBundle
 from app.protocol.models import SpectatorState
 from app.protocol.models import SpectatorUser
@@ -82,6 +87,40 @@ def _remove_connection_for_user(user_id: int, connection_id: str) -> bool:
 
     connections_by_user.pop(user_id, None)
     return False
+
+
+def _normalize_finished_state(state: SpectatorState) -> SpectatorState:
+    """Normalize final spectator state before emitting UserFinishedPlaying."""
+    if state.state == SpectatedUserState.PLAYING:
+        state.state = SpectatedUserState.QUIT
+
+    return state
+
+
+async def _get_valid_score_token(score_token_id: int, user_id: int) -> ScoreToken | None:
+    """Return an unused score token for user if valid."""
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(ScoreToken).where(
+                ScoreToken.id == score_token_id,
+                ScoreToken.user_id == user_id,
+                ScoreToken.score_id.is_(None),
+            ),
+        )
+
+    return result.scalar_one_or_none()
+
+
+async def _get_username_for_user(user_id: int) -> str | None:
+    """Fetch a user's username for spectator notifications."""
+    async with async_session_maker() as session:
+        result = await session.execute(select(User.username).where(User.id == user_id))
+
+    username = result.scalar_one_or_none()
+    if not username:
+        return None
+
+    return str(username)
 
 
 def _ensure_score_processed_dispatch_task() -> None:
@@ -263,12 +302,32 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         previous_watches = await hub_state.get_watching(conn.user_id)
         if previous_watches:
             logger.info(f"User {conn.user_id} reconnected, restoring {len(previous_watches)} watches")
-            conn.watching_users = previous_watches
+            conn.watching_users = set(previous_watches)
+
+            for watched_user_id in sorted(conn.watching_users):
+                target_playing = await hub_state.get_playing(watched_user_id)
+                if not target_playing:
+                    continue
+
+                await send_invocation(
+                    websocket,
+                    conn.use_messagepack,
+                    "UserBeganPlaying",
+                    [watched_user_id, target_playing.state.to_msgpack()],
+                )
+                logger.debug(
+                    "Restored watch state for user %s on target %s",
+                    conn.user_id,
+                    watched_user_id,
+                )
 
         async def on_ping() -> None:
             """Refresh Redis TTL for active spectator state while connection is alive."""
             if conn.is_playing:
                 await hub_state.refresh_playing_ttl(conn.user_id)
+
+                if score_token is not None:
+                    await hub_state.refresh_replay_frame_ttl(score_token)
 
             if conn.watching_users:
                 await hub_state.refresh_user_watch_ttl(conn.user_id, conn.watching_users)
@@ -286,170 +345,230 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                 len(args),
             )
 
-            if target == "BeginPlaySession":
-                raw_score_token = args[0] if args else None
-                if raw_score_token is None:
-                    logger.warning("BeginPlaySession missing score token from user %s", conn.user_id)
-                    if invocation_id is not None:
-                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
+            try:
+                if target == "BeginPlaySession":
+                    raw_score_token = args[0] if args else None
+                    if raw_score_token is None:
+                        logger.warning("BeginPlaySession missing score token from user %s", conn.user_id)
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
 
-                try:
-                    score_token = int(raw_score_token)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "BeginPlaySession invalid score token %r from user %s",
-                        raw_score_token,
-                        conn.user_id,
-                    )
-                    if invocation_id is not None:
-                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
-
-                state_data = args[1] if len(args) > 1 else {}
-                current_state = SpectatorState.from_msgpack(state_data)
-                conn.is_playing = True
-
-                await hub_state.set_playing(conn.user_id, current_state, score_token)
-                await _broadcast_to_watchers(
-                    conn.user_id,
-                    "UserBeganPlaying",
-                    [conn.user_id, current_state.to_msgpack()],
-                )
-                logger.info(f"User {conn.user_id} began playing beatmap {current_state.beatmap_id}")
-
-                if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-
-            elif target == "SendFrameData":
-                frame_data = args[0] if args else {}
-                frame_bundle = FrameDataBundle.from_msgpack(frame_data)
-
-                if score_token is not None:
-                    buffered_count = await hub_state.append_replay_frame_bundle(score_token, frame_bundle)
-                    if buffered_count % 25 == 0:
-                        logger.debug(
-                            "Buffered %s frame bundles for score token %s",
-                            buffered_count,
-                            score_token,
+                    try:
+                        parsed_score_token = int(raw_score_token)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "BeginPlaySession invalid score token %r from user %s",
+                            raw_score_token,
+                            conn.user_id,
                         )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    state_data = args[1] if len(args) > 1 else {}
+                    parsed_state = SpectatorState.from_msgpack(state_data)
+                    token = await _get_valid_score_token(parsed_score_token, conn.user_id)
+                    if token is None:
+                        logger.warning(
+                            "BeginPlaySession rejected unknown/used token %s from user %s",
+                            parsed_score_token,
+                            conn.user_id,
+                        )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    if parsed_state.beatmap_id is not None and token.beatmap_id != parsed_state.beatmap_id:
+                        logger.warning(
+                            "BeginPlaySession beatmap mismatch for user %s token=%s token_beatmap=%s state_beatmap=%s",
+                            conn.user_id,
+                            parsed_score_token,
+                            token.beatmap_id,
+                            parsed_state.beatmap_id,
+                        )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    if parsed_state.ruleset_id is not None and token.ruleset_id != parsed_state.ruleset_id:
+                        logger.warning(
+                            "BeginPlaySession ruleset mismatch for user %s token=%s token_ruleset=%s state_ruleset=%s",
+                            conn.user_id,
+                            parsed_score_token,
+                            token.ruleset_id,
+                            parsed_state.ruleset_id,
+                        )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    score_token = parsed_score_token
+                    current_state = parsed_state
+                    conn.is_playing = True
+
+                    await hub_state.set_playing(conn.user_id, current_state, score_token)
+                    await _broadcast_to_watchers(
+                        conn.user_id,
+                        "UserBeganPlaying",
+                        [conn.user_id, current_state.to_msgpack()],
+                    )
+                    logger.info(f"User {conn.user_id} began playing beatmap {current_state.beatmap_id}")
+
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+                elif target == "SendFrameData":
+                    frame_data = args[0] if args else {}
+                    frame_bundle = FrameDataBundle.from_msgpack(frame_data)
+
+                    if score_token is not None:
+                        buffered_count = await hub_state.append_replay_frame_bundle(score_token, frame_bundle)
+                        if buffered_count % 25 == 0:
+                            logger.debug(
+                                "Buffered %s frame bundles for score token %s",
+                                buffered_count,
+                                score_token,
+                            )
+                    else:
+                        logger.warning(
+                            "SendFrameData received without active score token from user %s",
+                            conn.user_id,
+                        )
+
+                    await _broadcast_to_watchers(
+                        conn.user_id,
+                        "UserSentFrames",
+                        [conn.user_id, frame_bundle.to_msgpack()],
+                    )
+
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+                elif target == "EndPlaySession":
+                    state_data = args[0] if args else {}
+                    final_state = _normalize_finished_state(SpectatorState.from_msgpack(state_data))
+                    conn.is_playing = False
+
+                    await hub_state.remove_playing(conn.user_id)
+                    await _broadcast_to_watchers(
+                        conn.user_id,
+                        "UserFinishedPlaying",
+                        [conn.user_id, final_state.to_msgpack()],
+                    )
+                    current_state = None
+                    score_token = None
+                    logger.info(f"User {conn.user_id} finished playing")
+
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+                elif target == "StartWatchingUser":
+                    raw_target_user_id = args[0] if args else None
+                    if raw_target_user_id is None:
+                        logger.warning("StartWatchingUser missing target user id from user %s", conn.user_id)
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    try:
+                        target_user_id = int(raw_target_user_id)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "StartWatchingUser invalid target user id %r from user %s",
+                            raw_target_user_id,
+                            conn.user_id,
+                        )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    conn.watching_users.add(target_user_id)
+
+                    await hub_state.add_watcher(conn.user_id, target_user_id)
+
+                    # Send current playing state if target is playing
+                    target_playing = await hub_state.get_playing(target_user_id)
+                    if target_playing:
+                        await send_invocation(
+                            websocket,
+                            conn.use_messagepack,
+                            "UserBeganPlaying",
+                            [target_user_id, target_playing.state.to_msgpack()],
+                        )
+                        logger.info(f"Sent playing state: user {target_user_id} is playing")
+
+                    # Notify target user
+                    watcher_username = await _get_username_for_user(conn.user_id)
+                    if watcher_username is None:
+                        logger.warning(
+                            "Failed to resolve watcher username for user %s, using fallback",
+                            conn.user_id,
+                        )
+                        watcher_username = f"User {conn.user_id}"
+
+                    watcher = SpectatorUser(online_id=conn.user_id, username=watcher_username)
+                    await _send_to_user(
+                        target_user_id,
+                        "UserStartedWatching",
+                        [[watcher.to_msgpack()]],
+                    )
+                    logger.info(f"User {conn.user_id} started watching user {target_user_id}")
+
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+                elif target == "EndWatchingUser":
+                    raw_target_user_id = args[0] if args else None
+                    if raw_target_user_id is None:
+                        logger.warning("EndWatchingUser missing target user id from user %s", conn.user_id)
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    try:
+                        target_user_id = int(raw_target_user_id)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "EndWatchingUser invalid target user id %r from user %s",
+                            raw_target_user_id,
+                            conn.user_id,
+                        )
+                        if invocation_id is not None:
+                            await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                        return
+
+                    conn.watching_users.discard(target_user_id)
+
+                    await hub_state.remove_watcher(conn.user_id, target_user_id)
+                    await _send_to_user(target_user_id, "UserEndedWatching", [conn.user_id])
+                    logger.info(f"User {conn.user_id} stopped watching user {target_user_id}")
+
+                    if invocation_id is not None:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
                 else:
                     logger.warning(
-                        "SendFrameData received without active score token from user %s",
-                        conn.user_id,
-                    )
-
-                await _broadcast_to_watchers(
-                    conn.user_id,
-                    "UserSentFrames",
-                    [conn.user_id, frame_bundle.to_msgpack()],
-                )
-
-                if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-
-            elif target == "EndPlaySession":
-                state_data = args[0] if args else {}
-                final_state = SpectatorState.from_msgpack(state_data)
-                conn.is_playing = False
-
-                await hub_state.remove_playing(conn.user_id)
-                await _broadcast_to_watchers(
-                    conn.user_id,
-                    "UserFinishedPlaying",
-                    [conn.user_id, final_state.to_msgpack()],
-                )
-                current_state = None
-                score_token = None
-                logger.info(f"User {conn.user_id} finished playing")
-
-                if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-
-            elif target == "StartWatchingUser":
-                raw_target_user_id = args[0] if args else None
-                if raw_target_user_id is None:
-                    logger.warning("StartWatchingUser missing target user id from user %s", conn.user_id)
-                    if invocation_id is not None:
-                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
-
-                try:
-                    target_user_id = int(raw_target_user_id)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "StartWatchingUser invalid target user id %r from user %s",
-                        raw_target_user_id,
+                        "Spectator hub received unknown target %r from user %s",
+                        target,
                         conn.user_id,
                     )
                     if invocation_id is not None:
                         await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
-
-                conn.watching_users.add(target_user_id)
-
-                await hub_state.add_watcher(conn.user_id, target_user_id)
-
-                # Send current playing state if target is playing
-                target_playing = await hub_state.get_playing(target_user_id)
-                if target_playing:
-                    await send_invocation(
-                        websocket,
-                        conn.use_messagepack,
-                        "UserBeganPlaying",
-                        [target_user_id, target_playing.state.to_msgpack()],
-                    )
-                    logger.info(f"Sent playing state: user {target_user_id} is playing")
-
-                # Notify target user
-                watcher = SpectatorUser(online_id=conn.user_id, username=f"User {conn.user_id}")
-                await _send_to_user(
-                    target_user_id,
-                    "UserStartedWatching",
-                    [[watcher.to_msgpack()]],
-                )
-                logger.info(f"User {conn.user_id} started watching user {target_user_id}")
-
-                if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-
-            elif target == "EndWatchingUser":
-                raw_target_user_id = args[0] if args else None
-                if raw_target_user_id is None:
-                    logger.warning("EndWatchingUser missing target user id from user %s", conn.user_id)
-                    if invocation_id is not None:
-                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
-
-                try:
-                    target_user_id = int(raw_target_user_id)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "EndWatchingUser invalid target user id %r from user %s",
-                        raw_target_user_id,
-                        conn.user_id,
-                    )
-                    if invocation_id is not None:
-                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-                    return
-
-                conn.watching_users.discard(target_user_id)
-
-                await hub_state.remove_watcher(conn.user_id, target_user_id)
-                await _send_to_user(target_user_id, "UserEndedWatching", [conn.user_id])
-                logger.info(f"User {conn.user_id} stopped watching user {target_user_id}")
-
-                if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
-
-            else:
-                logger.warning(
-                    "Spectator hub received unknown target %r from user %s",
+            except Exception:
+                logger.exception(
+                    "Spectator hub failed to process target %r for user %s",
                     target,
                     conn.user_id,
                 )
                 if invocation_id is not None:
-                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    try:
+                        await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+                    except Exception:
+                        logger.exception(
+                            "Spectator hub failed to send completion for invocation %s",
+                            invocation_id,
+                        )
 
         # Run message loop
         await run_message_loop(websocket, conn.use_messagepack, handle_message, on_ping=on_ping)
@@ -470,14 +589,22 @@ async def spectator_websocket(websocket: WebSocket) -> None:
         if conn.is_playing:
             await hub_state.remove_playing(conn.user_id)
             if current_state:
+                normalized_state = _normalize_finished_state(current_state)
                 await _broadcast_to_watchers(
                     conn.user_id,
                     "UserFinishedPlaying",
-                    [conn.user_id, current_state.to_msgpack()],
+                    [conn.user_id, normalized_state.to_msgpack()],
                 )
 
         has_other_connections = _remove_connection_for_user(conn.user_id, connection_id)
         if not has_other_connections:
+            watcher_targets = set(conn.watching_users)
+            if not watcher_targets:
+                watcher_targets = await hub_state.get_watching(conn.user_id)
+
+            for watcher_target_id in watcher_targets:
+                await _send_to_user(watcher_target_id, "UserEndedWatching", [conn.user_id])
+
             await hub_state.clear_user_watches(conn.user_id)
 
         # Remove from in-memory tracking

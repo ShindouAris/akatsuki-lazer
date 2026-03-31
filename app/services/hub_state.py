@@ -48,6 +48,7 @@ TTL_REPLAY_FRAMES = timedelta(hours=1)  # Replay buffers expire if score is neve
 TTL_BEATMAP_UPDATES = timedelta(hours=24)  # Keep beatmap update queue history for GetChangesSince
 
 MAX_BEATMAP_UPDATE_ENTRIES = 5000
+MAX_REPLAY_FRAME_BUNDLES = 10_000
 
 
 @dataclass
@@ -307,6 +308,11 @@ class HubStateService:
         key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
         payload = json.dumps(frame_bundle.to_msgpack())
         length = await self.redis.rpush(key, payload)
+
+        if length > MAX_REPLAY_FRAME_BUNDLES:
+            await self.redis.ltrim(key, -MAX_REPLAY_FRAME_BUNDLES, -1)
+            length = MAX_REPLAY_FRAME_BUNDLES
+
         await self.redis.expire(key, TTL_REPLAY_FRAMES)
         return length
 
@@ -337,6 +343,11 @@ class HubStateService:
         """Return the buffered replay bundle count for a score token."""
         key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
         return await self.redis.llen(key)
+
+    async def refresh_replay_frame_ttl(self, score_token: int) -> bool:
+        """Refresh replay buffer TTL for an active score token."""
+        key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
+        return await self.redis.expire(key, TTL_REPLAY_FRAMES)
 
     # =========================================================================
     # Metadata Beatmap Update Queue
