@@ -5,6 +5,7 @@ from fastapi import Form
 from fastapi import Query
 from fastapi import status
 from fastapi.responses import JSONResponse
+from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -215,10 +216,31 @@ def _user_to_response(user: User, mode: GameMode | None = None) -> UserResponse:
         statistics=stats,
     )
 
+
+def _normalize_user_lookup_ids(values: list[str]) -> tuple[list[int], list[str], list[tuple[str, int | str]]]:
+    """Split user lookup values into numeric IDs and usernames."""
+    numeric_ids: list[int] = []
+    usernames: list[str] = []
+    requested_values: list[tuple[str, int | str]] = []
+
+    for value in values:
+        normalized_value = value.strip()
+
+        if normalized_value.isdigit():
+            user_id = int(normalized_value)
+            numeric_ids.append(user_id)
+            requested_values.append(("id", user_id))
+        else:
+            usernames.append(normalized_value)
+            requested_values.append(("username", normalized_value))
+
+    return numeric_ids, usernames, requested_values
+
+
 @router.get("/users/")
 async def get_user_by_id(
     db: DbSession,
-    ids: list[int] | list[str] = Query(..., description="User IDs or usernames", alias="ids[]"),
+    ids: list[str] = Query(..., description="User IDs or usernames", alias="ids[]"),
 ) -> dict[str, list[UserResponse]]:
     """Get a user by ID or username."""
     if len(ids) > 50:
@@ -227,11 +249,38 @@ async def get_user_by_id(
             error="Too many IDs",
             message="Maximum 50 IDs allowed",
         )
-    # Determine lookup method
-    result = await db.execute(select(User).where(User.id.in_(ids)))
-    users = result.scalars().all()
+    numeric_ids, usernames, requested_values = _normalize_user_lookup_ids(ids)
 
-    if len(users) != len(ids):
+    query = select(User)
+    if numeric_ids and usernames:
+        query = query.where(or_(User.id.in_(numeric_ids), User.username.in_(usernames)))
+    elif numeric_ids:
+        query = query.where(User.id.in_(numeric_ids))
+    elif usernames:
+        query = query.where(User.username.in_(usernames))
+
+    result = await db.execute(query)
+    users = result.scalars().all()
+    users_by_id = {user.id: user for user in users}
+    users_by_username = {user.username: user for user in users}
+
+    resolved_users: list[User] = []
+    for lookup_type, lookup_value in requested_values:
+        if lookup_type == "id":
+            user = users_by_id.get(lookup_value)
+        else:
+            user = users_by_username.get(lookup_value)
+
+        if user is None:
+            raise OsuError(
+                code=status.HTTP_404_NOT_FOUND,
+                error="User not found",
+                message="One or more users not found",
+            )
+
+        resolved_users.append(user)
+
+    if len(resolved_users) != len(ids):
         raise OsuError(
             code=status.HTTP_404_NOT_FOUND,
             error="User not found",
@@ -239,7 +288,7 @@ async def get_user_by_id(
         )
 
     return {
-        "users": [_user_to_response(u) for u in users]
+        "users": [_user_to_response(u) for u in resolved_users]
     }
 
 
