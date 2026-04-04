@@ -10,7 +10,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from dataclasses import field
-from time import monotonic
+import time
 
 from fastapi import APIRouter
 from fastapi import Request
@@ -63,12 +63,17 @@ class PendingScoreProcessedEvent:
 # User state (playing, watches) is stored in Redis for persistence
 connections: dict[str, SpectatorConnection] = {}  # connection_id -> connection
 connections_by_user: dict[int, set[str]] = {}  # user_id -> connection_ids
+# Deprecated in-memory cache kept only for test compatibility.
 pending_score_processed_events: dict[int, dict[int, PendingScoreProcessedEvent]] = {}
 score_processed_dispatch_task: asyncio.Task | None = None
 
 SCORE_PROCESSED_INITIAL_DELAY_SECONDS = 0.5
 SCORE_PROCESSED_RETRY_INTERVAL_SECONDS = 0.5
 SCORE_PROCESSED_RETRY_WINDOW_SECONDS = 5.0
+SCORE_PROCESSED_RETRY_WARNING_ATTEMPTS = 3
+LEGACY_TIMESTAMP_EPOCH_FLOOR = 946684800.0  # 2000-01-01 UTC
+# Compatibility: allow metadata presence watchers to receive spectator stream broadcasts.
+ENABLE_PRESENCE_WATCHERS_FOR_SPECTATOR = True
 
 
 def _remove_connection_for_user(user_id: int, connection_id: str) -> bool:
@@ -128,6 +133,7 @@ def _ensure_score_processed_dispatch_task() -> None:
     global score_processed_dispatch_task
 
     if score_processed_dispatch_task is None or score_processed_dispatch_task.done():
+        logger.debug("Starting score processed dispatcher task")
         score_processed_dispatch_task = asyncio.create_task(_dispatch_pending_score_processed_events())
 
 
@@ -136,33 +142,125 @@ async def _dispatch_pending_score_processed_events() -> None:
     global score_processed_dispatch_task
 
     try:
-        while pending_score_processed_events:
-            now = monotonic()
+        hub_state = await get_hub_state_service()
 
-            for user_id, user_events in list(pending_score_processed_events.items()):
-                for score_id, event in list(user_events.items()):
-                    if now >= event.expires_at:
-                        user_events.pop(score_id, None)
+        while True:
+            pending_user_ids = await hub_state.list_pending_score_processed_users()
+            if not pending_user_ids:
+                break
+
+            now = time.time()
+            cycle_events = 0
+            cycle_delivered = 0
+            cycle_retried = 0
+            cycle_expired = 0
+            cycle_migrated = 0
+
+            for user_id in pending_user_ids:
+                user_events = await hub_state.get_pending_score_processed_events(user_id)
+                if not user_events:
+                    await hub_state.clear_pending_score_processed_user(user_id)
+                    continue
+
+                cycle_events += len(user_events)
+
+                for score_id, event in user_events.items():
+                    expires_at = float(event["expires_at"])
+                    next_attempt_at = float(event["next_attempt_at"])
+                    attempts = int(event.get("attempts", 0))
+                    migrated_event = False
+
+                    # Pre-epoch values are legacy monotonic timestamps from older builds.
+                    if expires_at < LEGACY_TIMESTAMP_EPOCH_FLOOR:
+                        expires_at = now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS
+                        migrated_event = True
+
+                    if next_attempt_at < LEGACY_TIMESTAMP_EPOCH_FLOOR:
+                        next_attempt_at = now
+                        migrated_event = True
+
+                    if migrated_event:
+                        cycle_migrated += 1
+
+                    if now >= expires_at:
+                        logger.debug(
+                            "Dropping expired UserScoreProcessed notification user=%s score=%s attempts=%s",
+                            user_id,
+                            score_id,
+                            attempts,
+                        )
+                        await hub_state.remove_pending_score_processed_event(user_id, score_id)
+                        cycle_expired += 1
                         continue
 
-                    if now < event.next_attempt_at:
+                    if now < next_attempt_at:
+                        if migrated_event:
+                            await hub_state.save_pending_score_processed_event(
+                                user_id,
+                                {
+                                    "score_id": score_id,
+                                    "next_attempt_at": next_attempt_at,
+                                    "expires_at": expires_at,
+                                    "attempts": attempts,
+                                },
+                            )
                         continue
 
                     delivered_count = await _send_to_user(user_id, "UserScoreProcessed", [user_id, score_id])
-                    event.attempts += 1
-                    event.next_attempt_at = now + SCORE_PROCESSED_RETRY_INTERVAL_SECONDS
 
                     if delivered_count > 0:
-                        user_events.pop(score_id, None)
+                        logger.debug(
+                            "Delivered UserScoreProcessed notification user=%s score=%s attempts=%s deliveries=%s",
+                            user_id,
+                            score_id,
+                            attempts + 1,
+                            delivered_count,
+                        )
+                        await hub_state.remove_pending_score_processed_event(user_id, score_id)
+                        cycle_delivered += 1
+                        continue
 
-                if not user_events:
-                    pending_score_processed_events.pop(user_id, None)
+                    retry_attempt = attempts + 1
+                    await hub_state.save_pending_score_processed_event(
+                        user_id,
+                        {
+                            "score_id": score_id,
+                            "next_attempt_at": now + SCORE_PROCESSED_RETRY_INTERVAL_SECONDS,
+                            "expires_at": expires_at,
+                            "attempts": retry_attempt,
+                        },
+                    )
+                    cycle_retried += 1
 
-            if pending_score_processed_events:
+                    if retry_attempt >= SCORE_PROCESSED_RETRY_WARNING_ATTEMPTS:
+                        logger.warning(
+                            "Retrying UserScoreProcessed notification user=%s score=%s attempts=%s time_left=%.2fs",
+                            user_id,
+                            score_id,
+                            retry_attempt,
+                            max(0.0, expires_at - now),
+                        )
+
+            if cycle_events > 0:
+                logger.debug(
+                    (
+                        "Score processed dispatcher cycle users=%s events=%s delivered=%s "
+                        "retried=%s expired=%s migrated=%s"
+                    ),
+                    len(pending_user_ids),
+                    cycle_events,
+                    cycle_delivered,
+                    cycle_retried,
+                    cycle_expired,
+                    cycle_migrated,
+                )
+
+            if await hub_state.list_pending_score_processed_users():
                 await asyncio.sleep(0.1)
     except Exception as exc:
         logger.exception("Score processed dispatcher failed: %s", exc)
     finally:
+        logger.debug("Score processed dispatcher task finished")
         score_processed_dispatch_task = None
 
 
@@ -174,17 +272,37 @@ async def spectator_negotiate(request: Request) -> JSONResponse:
 
 async def _broadcast_to_watchers(target_user_id: int, target: str, arguments: list) -> None:
     """Broadcast a message to all users watching a specific user."""
+    logger.info("Broadcasting %s to watchers of user %s", target, target_user_id)
     hub_state = await get_hub_state_service()
-    watcher_user_ids = await hub_state.get_watchers(target_user_id)
+    explicit_watcher_user_ids = await hub_state.get_watchers(target_user_id)
+    watcher_user_ids = set(explicit_watcher_user_ids)
 
+    presence_watcher_count = 0
+    if ENABLE_PRESENCE_WATCHERS_FOR_SPECTATOR:
+        presence_watcher_user_ids = await hub_state.get_presence_watchers()
+        presence_watcher_user_ids.discard(target_user_id)
+        presence_watcher_count = len(presence_watcher_user_ids)
+        watcher_user_ids.update(presence_watcher_user_ids)
+
+    logger.info(
+        (
+            "Found %s watchers for user %s (explicit=%s, presence=%s)"
+        ),
+        len(watcher_user_ids),
+        target_user_id,
+        len(explicit_watcher_user_ids),
+        presence_watcher_count,
+    )
     for watcher_user_id in watcher_user_ids:
         watcher_conn_ids = connections_by_user.get(watcher_user_id)
         if not watcher_conn_ids:
+            logger.info("Watcher user %s has no active connections, skipping", watcher_user_id)
             continue
 
         for conn_id in list(watcher_conn_ids):
             conn = connections.get(conn_id)
             if not conn or not conn.websocket:
+                logger.warning(f"Failed to find connection for watcher user {watcher_user_id}, connection {conn_id}")
                 _remove_connection_for_user(watcher_user_id, conn_id)
                 continue
 
@@ -225,24 +343,31 @@ async def send_user_score_processed(user_id: int, score_id: int) -> int:
     This is called after score submission to trigger the client to
     fetch updated user statistics for the "Overall Ranking" panel.
     """
-    now = monotonic()
-    user_events = pending_score_processed_events.setdefault(user_id, {})
-    event = user_events.get(score_id)
+    now = time.time()
+    hub_state = await get_hub_state_service()
+    event_count = await hub_state.upsert_pending_score_processed_event(
+        user_id=user_id,
+        score_id=score_id,
+        next_attempt_at=now + SCORE_PROCESSED_INITIAL_DELAY_SECONDS,
+        expires_at=now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS,
+    )
 
-    if event is None:
-        event = PendingScoreProcessedEvent(
-            score_id=score_id,
-            next_attempt_at=now + SCORE_PROCESSED_INITIAL_DELAY_SECONDS,
-            expires_at=now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS,
-        )
-        user_events[score_id] = event
-    else:
-        event.expires_at = max(event.expires_at, now + SCORE_PROCESSED_RETRY_WINDOW_SECONDS)
-        event.next_attempt_at = min(event.next_attempt_at, now + SCORE_PROCESSED_INITIAL_DELAY_SECONDS)
+    logger.debug(
+        "Queued UserScoreProcessed notification user=%s score=%s queued_user_events=%s",
+        user_id,
+        score_id,
+        event_count,
+    )
 
     _ensure_score_processed_dispatch_task()
 
-    return len(user_events)
+    return event_count
+
+
+def resume_score_processed_dispatcher() -> None:
+    """Resume pending score-processed dispatching (used on app startup)."""
+    logger.debug("Resuming score processed dispatcher")
+    _ensure_score_processed_dispatch_task()
 
 
 @router.websocket("/spectator")
@@ -309,11 +434,13 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                 if not target_playing:
                     continue
 
+                print(f"Restoring watch state [UserBeganPlaying] for user {conn.user_id} on target {watched_user_id} (state={target_playing.state})")
+
                 await send_invocation(
                     websocket,
                     conn.use_messagepack,
                     "UserBeganPlaying",
-                    [watched_user_id, target_playing.state.to_msgpack()],
+                    [watched_user_id, target_playing.state.to_msgpack()], # user_id, SpectatorState
                 )
                 logger.debug(
                     "Restored watch state for user %s on target %s",
@@ -408,6 +535,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                     conn.is_playing = True
 
                     await hub_state.set_playing(conn.user_id, current_state, score_token)
+                    print(f"User {conn.user_id} began playing beatmap {current_state.beatmap_id} with token {score_token} and state {current_state}")
                     await _broadcast_to_watchers(
                         conn.user_id,
                         "UserBeganPlaying",
@@ -490,6 +618,7 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                     # Send current playing state if target is playing
                     target_playing = await hub_state.get_playing(target_user_id)
                     if target_playing:
+                        print(f"User {conn.user_id} started watching user {target_user_id} who is currently playing (state={target_playing.state}), sending UserBeganPlaying")
                         await send_invocation(
                             websocket,
                             conn.use_messagepack,

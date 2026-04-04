@@ -511,6 +511,13 @@ async def metadata_websocket(websocket: WebSocket) -> None:
                     if len(watcher_conn_ids) == 1:
                         await hub_state.add_presence_watcher(conn.user_id)
 
+                logger.debug(
+                    (
+                        "BeginWatchingUserPresence only subscribes metadata presence updates; "
+                        "gameplay spectating requires StartWatchingUser on /spectator"
+                    ),
+                )
+
                 # Send all currently online users from Redis
                 online_users = await hub_state.get_all_online_users()
                 for stored_presence in online_users:
@@ -620,6 +627,23 @@ async def metadata_websocket(websocket: WebSocket) -> None:
                 )
                 if invocation_id is not None:
                     await send_completion(websocket, conn.use_messagepack, invocation_id, updates)
+
+            elif target in ("StartWatchingUser", "EndWatchingUser"):
+                logger.warning(
+                    (
+                        "Metadata hub received %s from user %s. "
+                        "This method belongs to /spectator hub and will be ignored."
+                    ),
+                    target,
+                    conn.user_id,
+                )
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
+
+            else:
+                logger.warning("Metadata hub received unknown target %r from user %s", target, conn.user_id)
+                if invocation_id is not None:
+                    await send_void_completion(websocket, conn.use_messagepack, invocation_id)
 
         # Run message loop
         await run_message_loop(websocket, conn.use_messagepack, handle_message, on_ping=on_ping)

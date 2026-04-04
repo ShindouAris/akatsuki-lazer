@@ -25,12 +25,16 @@ class FakeHubStateService:
         self.playing_by_user: dict[int, StoredPlayingState] = {}
         self.watching_by_user: dict[int, set[int]] = {}
         self.watchers_by_user: dict[int, set[int]] = {}
+        self.presence_watchers: set[int] = set()
         self.replay_bundle_counts: dict[int, int] = {}
         self.clear_watches_calls: list[int] = []
         self.refresh_replay_ttl_calls: list[int] = []
 
     async def get_watchers(self, target_user_id: int) -> set[int]:
         return set(self.watchers_by_user.get(target_user_id, set()))
+
+    async def get_presence_watchers(self) -> set[int]:
+        return set(self.presence_watchers)
 
     async def get_watching(self, user_id: int) -> set[int]:
         return set(self.watching_by_user.get(user_id, set()))

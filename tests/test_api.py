@@ -208,8 +208,46 @@ async def test_lookup_user_with_ids_bracket_trailing_slash(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["id"] == user.id
-    assert payload["username"] == user.username
+    assert payload["users"][0]["id"] == user.id
+    assert payload["users"][0]["username"] == user.username
+
+
+@pytest.mark.asyncio
+async def test_get_users_bulk_accepts_string_ids(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Bulk user lookup should accept ids[] values sent as strings."""
+    first_user = User(
+        username="bulkfirstuser",
+        email="bulkfirst@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    second_user = User(
+        username="bulkseconduser",
+        email="bulksecond@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="GB",
+    )
+    db_session.add(first_user)
+    db_session.add(second_user)
+    await db_session.commit()
+    await db_session.refresh(first_user)
+    await db_session.refresh(second_user)
+
+    response = await client.get(
+        "/api/v2/users/",
+        params=[("ids[]", str(second_user.id)), ("ids[]", first_user.username)],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [user["id"] for user in payload["users"]] == [second_user.id, first_user.id]
+    assert [user["username"] for user in payload["users"]] == [
+        second_user.username,
+        first_user.username,
+    ]
 
 
 @pytest.mark.asyncio

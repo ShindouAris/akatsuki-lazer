@@ -13,6 +13,7 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
+import sqlalchemy
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
@@ -67,6 +68,8 @@ class User(Base):
     is_supporter: Mapped[bool] = mapped_column(Boolean, default=False)
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_bot: Mapped[bool] = mapped_column(Boolean, default=False)
+    hide_presence: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sqlalchemy.false())
+    allow_pm_from_non_friends: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sqlalchemy.true())
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -175,6 +178,17 @@ class UserRelation(Base):
     target: Mapped["User"] = relationship(
         "User", foreign_keys=[target_id], back_populates="related_by",
     )
+
+
+class UserGroupMembership(Base):
+    """User membership in a named or numbered group."""
+
+    __tablename__ = "user_group_memberships"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    group_id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
 
 class OAuthClient(Base):

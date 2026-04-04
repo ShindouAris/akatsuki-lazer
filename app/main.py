@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from app.api.hubs.metadata import get_online_count
 from app.api.hubs.metadata import router as metadata_router
 from app.api.hubs.multiplayer import router as multiplayer_router
+from app.api.hubs.spectator import resume_score_processed_dispatcher
 from app.api.hubs.spectator import router as spectator_router
 from app.api.v2 import router as api_v2_router
 from app.api.v2.oauth import router as oauth_router
@@ -41,6 +42,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     hub_state = await get_hub_state_service()
     app.state.hub_state = hub_state
     logger.info("Redis hub state service initialized")
+    resume_score_processed_dispatcher()
+    logger.info("Spectator score-processed dispatcher resumed")
 
     yield
 

@@ -11,6 +11,7 @@ from app.models.beatmap import *
 from app.models.multiplayer import *
 from app.models.score import *
 from app.models.user import *
+from app.models.legacy import *
 from dotenv import load_dotenv
 
 load_dotenv()

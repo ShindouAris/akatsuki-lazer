@@ -146,9 +146,10 @@ async def send_invocation(
 ) -> None:
     """Send a SignalR invocation to a client."""
     serialized_args = [serialize_argument(arg) for arg in arguments]
-
+    logger.info("Sending invocation '%s' with args %s to client %s", target, serialized_args, websocket.client)
     if use_messagepack:
-        await websocket.send_bytes(pack_invocation(target, serialized_args))
+        packed = pack_invocation(target, serialized_args)
+        await websocket.send_bytes(packed)
     else:
         msg = {
             "type": 1,

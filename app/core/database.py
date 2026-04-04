@@ -30,6 +30,11 @@ class Base(DeclarativeBase):
     pass
 
 
+# Import models that are not otherwise pulled in by the application startup path.
+# This ensures metadata registration before create_all() runs.
+from app.models import legacy as _legacy_models  # noqa: F401,E402
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency that provides a database session."""
     async with async_session_maker() as session:

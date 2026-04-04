@@ -36,6 +36,8 @@ PREFIX_WATCHING = "hub:watching:"  # {user_id} -> Set of watched user IDs
 PREFIX_WATCHERS = "hub:watchers:"  # {user_id} -> Set of watcher user IDs (reverse index)
 PREFIX_PRESENCE_WATCHERS = "hub:presence_watchers"  # Set of user IDs watching presence
 PREFIX_REPLAY_FRAMES = "hub:replay:frames:"  # {score_token} -> list of FrameDataBundle payloads
+PREFIX_PENDING_SCORE_PROCESSED_USERS = "hub:pending_score_processed:users"  # set of user_ids with queued score events
+PREFIX_PENDING_SCORE_PROCESSED_USER = "hub:pending_score_processed:user:"  # {user_id} -> hash score_id -> metadata json
 PREFIX_BEATMAP_UPDATE_COUNTER = "hub:metadata:beatmap_updates:counter"  # Monotonic queue id
 PREFIX_BEATMAP_UPDATE_ENTRY = "hub:metadata:beatmap_updates:entry:"  # {queue_id} -> JSON list of beatmapset ids
 PREFIX_BEATMAP_UPDATE_IDS = "hub:metadata:beatmap_updates:ids"  # Sorted set of known queue IDs
@@ -45,6 +47,7 @@ TTL_PRESENCE = timedelta(minutes=5)  # Presence expires after 5 min of no update
 TTL_PLAYING = timedelta(hours=2)  # Playing state expires after 2 hours max
 TTL_WATCHING = timedelta(hours=1)  # Watch relationships expire after 1 hour
 TTL_REPLAY_FRAMES = timedelta(hours=1)  # Replay buffers expire if score is never submitted
+TTL_PENDING_SCORE_PROCESSED = timedelta(minutes=5)  # Pending score notifications survive brief restarts
 TTL_BEATMAP_UPDATES = timedelta(hours=24)  # Keep beatmap update queue history for GetChangesSince
 
 MAX_BEATMAP_UPDATE_ENTRIES = 5000
@@ -350,6 +353,134 @@ class HubStateService:
         return await self.redis.expire(key, TTL_REPLAY_FRAMES)
 
     # =========================================================================
+    # Pending Score Processed Notifications (Spectator Hub)
+    # =========================================================================
+
+    async def upsert_pending_score_processed_event(
+        self,
+        user_id: int,
+        score_id: int,
+        next_attempt_at: float,
+        expires_at: float,
+    ) -> int:
+        """Insert or refresh a pending score processed notification.
+
+        Returns:
+            Number of queued pending notifications for the user.
+        """
+        key = f"{PREFIX_PENDING_SCORE_PROCESSED_USER}{user_id}"
+        field = str(score_id)
+
+        attempts = 0
+        existing_payload = await self.redis.hget(key, field)
+        if existing_payload:
+            try:
+                existing_data = json.loads(existing_payload)
+                attempts = int(existing_data.get("attempts", 0))
+                next_attempt_at = min(float(existing_data.get("next_attempt_at", next_attempt_at)), next_attempt_at)
+                expires_at = max(float(existing_data.get("expires_at", expires_at)), expires_at)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                attempts = 0
+
+        payload = json.dumps({
+            "score_id": score_id,
+            "next_attempt_at": next_attempt_at,
+            "expires_at": expires_at,
+            "attempts": attempts,
+        })
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hset(key, field, payload)
+            pipe.expire(key, TTL_PENDING_SCORE_PROCESSED)
+            pipe.sadd(PREFIX_PENDING_SCORE_PROCESSED_USERS, user_id)
+            pipe.expire(PREFIX_PENDING_SCORE_PROCESSED_USERS, TTL_PENDING_SCORE_PROCESSED)
+            pipe.hlen(key)
+            _, _, _, _, event_count = await pipe.execute()
+
+        return int(event_count)
+
+    async def list_pending_score_processed_users(self) -> set[int]:
+        """Return user ids that currently have pending score notifications."""
+        members = await self.redis.smembers(PREFIX_PENDING_SCORE_PROCESSED_USERS)
+        user_ids: set[int] = set()
+
+        for member in members:
+            try:
+                user_ids.add(int(member))
+            except (TypeError, ValueError):
+                continue
+
+        return user_ids
+
+    async def get_pending_score_processed_events(self, user_id: int) -> dict[int, dict[str, float | int]]:
+        """Fetch queued score processed notifications for one user."""
+        key = f"{PREFIX_PENDING_SCORE_PROCESSED_USER}{user_id}"
+        rows = await self.redis.hgetall(key)
+
+        events: dict[int, dict[str, float | int]] = {}
+        for raw_score_id, raw_payload in rows.items():
+            try:
+                score_id = int(raw_score_id)
+                payload = json.loads(raw_payload)
+                next_attempt_at = float(payload["next_attempt_at"])
+                expires_at = float(payload["expires_at"])
+                attempts = int(payload.get("attempts", 0))
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+
+            events[score_id] = {
+                "score_id": score_id,
+                "next_attempt_at": next_attempt_at,
+                "expires_at": expires_at,
+                "attempts": attempts,
+            }
+
+        return events
+
+    async def save_pending_score_processed_event(self, user_id: int, event: dict[str, float | int]) -> None:
+        """Persist an updated queued score processed event for one user."""
+        score_id = int(event["score_id"])
+        payload = json.dumps({
+            "score_id": score_id,
+            "next_attempt_at": float(event["next_attempt_at"]),
+            "expires_at": float(event["expires_at"]),
+            "attempts": int(event.get("attempts", 0)),
+        })
+
+        key = f"{PREFIX_PENDING_SCORE_PROCESSED_USER}{user_id}"
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hset(key, str(score_id), payload)
+            pipe.expire(key, TTL_PENDING_SCORE_PROCESSED)
+            pipe.sadd(PREFIX_PENDING_SCORE_PROCESSED_USERS, user_id)
+            pipe.expire(PREFIX_PENDING_SCORE_PROCESSED_USERS, TTL_PENDING_SCORE_PROCESSED)
+            await pipe.execute()
+
+    async def remove_pending_score_processed_event(self, user_id: int, score_id: int) -> None:
+        """Remove one pending score processed event and cleanup empty user queues."""
+        key = f"{PREFIX_PENDING_SCORE_PROCESSED_USER}{user_id}"
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hdel(key, str(score_id))
+            pipe.hlen(key)
+            _, remaining_count = await pipe.execute()
+
+        if int(remaining_count) > 0:
+            return
+
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(key)
+            pipe.srem(PREFIX_PENDING_SCORE_PROCESSED_USERS, user_id)
+            await pipe.execute()
+
+    async def clear_pending_score_processed_user(self, user_id: int) -> None:
+        """Remove all pending score processed notifications for one user."""
+        key = f"{PREFIX_PENDING_SCORE_PROCESSED_USER}{user_id}"
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(key)
+            pipe.srem(PREFIX_PENDING_SCORE_PROCESSED_USERS, user_id)
+            await pipe.execute()
+
+    # =========================================================================
     # Metadata Beatmap Update Queue
     # =========================================================================
 
@@ -539,8 +670,10 @@ class HubStateService:
             f"{PREFIX_WATCHING}*",
             f"{PREFIX_WATCHERS}*",
             f"{PREFIX_REPLAY_FRAMES}*",
+            f"{PREFIX_PENDING_SCORE_PROCESSED_USER}*",
             f"{PREFIX_BEATMAP_UPDATE_ENTRY}*",
             PREFIX_PRESENCE_WATCHERS,
+            PREFIX_PENDING_SCORE_PROCESSED_USERS,
             PREFIX_BEATMAP_UPDATE_COUNTER,
             PREFIX_BEATMAP_UPDATE_IDS,
         ]
