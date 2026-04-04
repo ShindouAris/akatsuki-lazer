@@ -12,7 +12,7 @@ from sqlalchemy import and_
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
-from app.api.v2.schemas import RankHistoryResponse
+from app.api.v2.schemas import RankHistoryResponse, UserLookupResponse
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
@@ -243,15 +243,15 @@ async def get_user_by_id(
     }
 
 
-@router.get("/users/lookup/", response_model=UserCompact)
-@router.get("/users/lookup", response_model=UserCompact, include_in_schema=False)
+@router.get("/users/lookup/", response_model=UserLookupResponse, include_in_schema=False)
+@router.get("/users/lookup", response_model=UserLookupResponse, include_in_schema=False)
 async def lookup_user(
     db: DbSession,
     id: int | None = Query(None),
     username: str | None = Query(None),
     ids_bracket: list[int] = Query(default_factory=list, alias="ids[]"),
     ids: list[int] = Query(default_factory=list),
-) -> UserCompact:
+) -> UserLookupResponse:
     """Lookup a user by ID or username."""
     resolved_id = id
     if resolved_id is None:
@@ -279,14 +279,18 @@ async def lookup_user(
             message="User not found",
         )
 
-    return UserCompact(
-        id=user.id,
-        username=user.username,
-        avatar_url=user.avatar_url,
-        country_code=user.country_acronym,
-        is_active=user.is_active,
-        is_bot=user.is_bot,
-        is_supporter=user.is_supporter,
+    return UserLookupResponse(
+        users=[
+            UserCompact(
+                id=user.id,
+                username=user.username,
+                avatar_url=user.avatar_url,
+                country_code=user.country_acronym,
+                is_active=user.is_active,
+                is_bot=user.is_bot,
+                is_supporter=user.is_supporter,
+            )
+        ]
     )
 
 

@@ -22,6 +22,12 @@ class UserCompact(BaseModel):
     is_bot: bool = False
     is_supporter: bool = False
 
+class UserLookupResponse(BaseModel):
+    """Response for user lookup endpoint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    users: list[UserCompact] = Field(default_factory=list)
 
 class RankHistoryResponse(BaseModel):
     """Rank history for displaying the rank graph."""
