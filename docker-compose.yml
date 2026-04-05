@@ -4,13 +4,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:youshallnotpass@postgres:5432/osu
+      - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
   
   redis:
     image: redis:latest
-    ports:
-      - "6379:6379"
   
   postgres:
     image: postgres:latest
@@ -18,8 +19,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: youshallnotpass
       POSTGRES_DB: osu
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
