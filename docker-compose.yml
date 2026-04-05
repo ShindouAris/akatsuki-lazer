@@ -5,10 +5,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:youshallnotpass@postgres:5432/osu
+      - DATABASE_URL=postgresql+asyncpg://postgres:youshallnotpass@postgres:5432/osu
       - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
   
   redis:
     image: redis:latest
@@ -20,7 +23,13 @@ services:
       POSTGRES_PASSWORD: youshallnotpass
       POSTGRES_DB: osu
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/osu/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d root"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
 volumes:
   postgres_data:
