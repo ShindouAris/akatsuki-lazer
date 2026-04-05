@@ -16,7 +16,7 @@ from app.core.security import decode_token
 from app.models.user import User
 
 if TYPE_CHECKING:
-    from app.hubs.spectator import SpectatorHub
+    from app.api.hubs.spectator import SpectatorHub
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/oauth/token", auto_error=False)
 
