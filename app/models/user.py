@@ -65,7 +65,7 @@ class User(Base):
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_supporter: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_supporter: Mapped[bool] = mapped_column(Boolean, default=True)
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_bot: Mapped[bool] = mapped_column(Boolean, default=False)
     hide_presence: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sqlalchemy.false())

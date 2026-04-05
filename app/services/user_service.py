@@ -23,7 +23,7 @@ async def create_user(
     username: str,
     email: str,
     password: str,
-    country_acronym: str = "XX",
+    country_acronym: str = "VN",
 ) -> User:
     """Create a new user account."""
     # Hash password
@@ -35,6 +35,7 @@ async def create_user(
         email=email,
         password_hash=password_hash,
         country_acronym=country_acronym,
+        is_supporter=True,
         created_at=datetime.now(UTC),
     )
     db.add(user)
