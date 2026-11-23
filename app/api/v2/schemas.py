@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 # User schemas
@@ -99,6 +100,8 @@ class BeatmapCompact(BaseModel):
     status: str = "pending"
     difficulty_rating: float = 0.0
     total_length: int = 0
+    # The drain time, which is the "Length" the client shows (cards, song select); without it that reads 00:00.
+    hit_length: int | None = None
     cs: float = 5.0
     ar: float = 5.0
     accuracy: float = Field( default=5.0)
@@ -110,6 +113,12 @@ class BeatmapCompact(BaseModel):
     count_sliders: int = 0
     count_spinners: int = 0
     checksum: str | None = None
+
+    @model_validator(mode="after")
+    def _fill_hit_length(self) -> "BeatmapCompact":
+        if self.hit_length is None:
+            self.hit_length = self.total_length
+        return self
 
 
 class BeatmapsetCompact(BaseModel):
@@ -127,6 +136,20 @@ class BeatmapsetCompact(BaseModel):
     status: str = "pending"
     play_count: int = 0
     favourite_count: int = 0
+    # Artwork URLs the client loads for cards/backgrounds; derived from the id unless given.
+    covers: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _fill_covers(self) -> "BeatmapsetCompact":
+        if self.covers is None:
+            base = f"https://assets.ppy.sh/beatmaps/{self.id}/covers"
+            self.covers = {
+                name: f"{base}/{name}.jpg"
+                for name in (
+                    "cover", "cover@2x", "card", "card@2x", "list", "list@2x", "slimcover", "slimcover@2x",
+                )
+            }
+        return self
 
 
 class BeatmapResponse(BeatmapCompact):

@@ -11,11 +11,21 @@ from fastapi import WebSocketDisconnect
 from fastapi.websockets import WebSocketState
 
 from app.api.deps import CurrentUser
+from app.core.security import decode_token
+from app.services.chat import connections
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 NOTIFICATIONS_KEEPALIVE_TIMEOUT_SECONDS = 30.0
+
+
+def _user_id_of(websocket: WebSocket) -> int | None:
+    """The user of a notifications socket: the bearer token of the handshake (or ``access_token`` in the query)."""
+    header = websocket.headers.get("authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else websocket.query_params.get("access_token")
+    data = decode_token(token) if token else None
+    return data.user_id if data is not None else None
 
 
 @router.get("/notifications")
@@ -52,6 +62,10 @@ async def notifications_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     logger.info("Notifications WebSocket connected")
 
+    # Who is connected decides who gets chat messages. Without a valid token the socket still works, without chat.
+    user_id = _user_id_of(websocket)
+    connection = connections.register(user_id, websocket) if user_id is not None else None
+
     try:
         while True:
             try:
@@ -74,6 +88,8 @@ async def notifications_websocket(websocket: WebSocket) -> None:
                         # Handle different event types
                         if event == "chat.start":
                             # Client wants to start receiving chat messages
+                            if connection is not None:
+                                connections.start_chat(connection)
                             await websocket.send_text(
                                 json.dumps({
                                     "event": "chat.start",
@@ -113,4 +129,6 @@ async def notifications_websocket(websocket: WebSocket) -> None:
     except Exception as e:
         logger.exception(f"Notifications WebSocket error: {e}")
     finally:
+        if connection is not None and user_id is not None:
+            connections.unregister(user_id, connection)
         logger.info("Notifications WebSocket connection closed")

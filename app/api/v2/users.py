@@ -13,6 +13,8 @@ from sqlalchemy import and_
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
+from app.api.v2.live_ranks import with_live_ranks
+from app.api.v2.live_ranks import with_live_ranks_many
 from app.api.v2.schemas import RankHistoryResponse, UserLookupResponse
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserResponse
@@ -287,9 +289,8 @@ async def get_user_by_id(
             message="One or more users not found",
         )
 
-    return {
-        "users": [_user_to_response(u) for u in resolved_users]
-    }
+    items = [(_user_to_response(u), u, u.playmode) for u in resolved_users]
+    return {"users": await with_live_ranks_many(items, db)}
 
 
 @router.get("/users/lookup/", response_model=UserLookupResponse, include_in_schema=False)
@@ -367,7 +368,7 @@ async def get_user(
             message="User not found",
         )
 
-    return _user_to_response(user)
+    return await with_live_ranks(_user_to_response(user), user, user.playmode, db)
 
 
 @router.get("/users/{user_id}/{mode}", response_model=UserResponse)
@@ -402,7 +403,7 @@ async def get_user_mode(
             message=f"Invalid ruleset: {mode}",
         )
 
-    return _user_to_response(user, mode_enum)
+    return await with_live_ranks(_user_to_response(user, mode_enum), user, mode_enum, db)
 
 
 @router.post("/users/{user_id}/block")

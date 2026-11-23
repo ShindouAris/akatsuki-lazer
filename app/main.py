@@ -15,16 +15,24 @@ from fastapi.responses import JSONResponse
 from app.api.hubs.metadata import get_online_count
 from app.api.hubs.metadata import router as metadata_router
 from app.api.hubs.multiplayer import router as multiplayer_router
+from app.api.internal.matchmaking import router as internal_matchmaking_router
+from app.api.internal.multiplayer import router as internal_multiplayer_router
 from app.api.hubs.spectator import resume_score_processed_dispatcher
 from app.api.hubs.spectator import router as spectator_router
+from app.api.hubs.spectator import send_user_score_processed
 from app.api.v2 import router as api_v2_router
 from app.api.v2.oauth import router as oauth_router
 from app.api.v2.users import root_registration_router
 from app.core.config import get_settings
+from app.core.database import async_session_maker
 from app.core.database import close_db
-from app.core.database import init_db
+# from app.core.database import init_db
 from app.services.hub_state import close_hub_state_service
 from app.services.hub_state import get_hub_state_service
+from app.services.leaderboard import Leaderboard
+from app.services.leaderboard import set_leaderboard
+from app.services.rank_history import RankHistorySnapshotter
+from app.services.score_worker import get_score_worker
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -35,8 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     # Startup
     logger.info("Starting py-lazer-server...")
-    await init_db()
-    logger.info("Database initialized")
+    # await init_db()
+    # logger.info("Database initialized")
 
     # Initialize Redis hub state service
     hub_state = await get_hub_state_service()
@@ -45,10 +53,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     resume_score_processed_dispatcher()
     logger.info("Spectator score-processed dispatcher resumed")
 
+    # Score statistics worker: updates user stats after submission, then tells the client via the spectator hub.
+    score_worker = get_score_worker()
+    score_worker.on_processed = send_user_score_processed
+    leaderboard = Leaderboard(hub_state.redis)
+    set_leaderboard(leaderboard)  # profiles read live ranks from it
+    score_worker.leaderboard = leaderboard
+    score_worker.start()
+    rank_snapshotter = RankHistorySnapshotter(async_session_maker)
+    rank_snapshotter.start()
+    logger.info("Score statistics worker started")
+
     yield
 
     # Shutdown
     logger.info("Shutting down py-lazer-server...")
+    await rank_snapshotter.stop()
+    await score_worker.stop()
+    set_leaderboard(None)
+    logger.info("Score statistics worker stopped")
     await close_hub_state_service()
     logger.info("Redis hub state service closed")
     await close_db()
@@ -87,7 +110,14 @@ app.include_router(oauth_router, tags=["OAuth"])
 # Include SignalR hub endpoints at root level
 app.include_router(spectator_router, tags=["SignalR"])
 app.include_router(metadata_router, tags=["SignalR"])
-app.include_router(multiplayer_router, tags=["SignalR"])
+if settings.use_external_multiplayer:
+    logger.info("Realtime multiplayer is served by the external service; /multiplayer is not mounted here")
+else:
+    app.include_router(multiplayer_router, tags=["SignalR"])
+
+# Persistence API for the external multiplayer service (disabled unless INTERNAL_API_KEY is set)
+app.include_router(internal_multiplayer_router, tags=["Internal"])
+app.include_router(internal_matchmaking_router, tags=["Internal"])
 
 @app.exception_handler(OsuError)
 async def custom_handler(request: Request, exc: OsuError) -> JSONResponse:

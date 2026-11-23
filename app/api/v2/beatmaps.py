@@ -77,6 +77,7 @@ def _beatmap_to_compact(beatmap: Beatmap) -> BeatmapCompact:
         status=_status_to_string(beatmap.status),
         difficulty_rating=beatmap.difficulty_rating,
         total_length=beatmap.total_length,
+        hit_length=beatmap.hit_length or beatmap.total_length,
         cs=beatmap.cs,
         ar=beatmap.ar,
         accuracy=beatmap.od,

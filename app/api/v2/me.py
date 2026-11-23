@@ -3,6 +3,8 @@
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser
+from app.api.deps import DbSession
+from app.api.v2.live_ranks import with_live_ranks
 from app.api.v2.schemas import RankHistoryResponse
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
@@ -72,12 +74,12 @@ def _get_user_statistics(user: CurrentUser, mode: GameMode) -> UserStatisticsRes
 
 @router.get("/me", response_model=UserResponse)
 @router.get("/me/", response_model=UserResponse, include_in_schema=False)
-async def get_current_user(user: CurrentUser) -> UserResponse:
+async def get_current_user(user: CurrentUser, db: DbSession) -> UserResponse:
     """Get the current authenticated user's profile."""
     mode = user.playmode
     stats = _get_user_statistics(user, mode)
 
-    return UserResponse(
+    response = UserResponse(
         id=user.id,
         username=user.username,
         avatar_url=user.avatar_url,
@@ -94,10 +96,11 @@ async def get_current_user(user: CurrentUser) -> UserResponse:
         last_visit=user.last_visit,
         statistics=stats,
     )
+    return await with_live_ranks(response, user, mode, db)
 
 
 @router.get("/me/{mode}", response_model=UserResponse)
-async def get_current_user_mode(user: CurrentUser, mode: str) -> UserResponse:
+async def get_current_user_mode(user: CurrentUser, db: DbSession, mode: str) -> UserResponse:
     """Get the current authenticated user's profile for a specific mode."""
     mode_enum = {
         "osu": GameMode.OSU,
@@ -108,7 +111,7 @@ async def get_current_user_mode(user: CurrentUser, mode: str) -> UserResponse:
 
     stats = _get_user_statistics(user, mode_enum)
 
-    return UserResponse(
+    response = UserResponse(
         id=user.id,
         username=user.username,
         avatar_url=user.avatar_url,
@@ -125,3 +128,4 @@ async def get_current_user_mode(user: CurrentUser, mode: str) -> UserResponse:
         last_visit=user.last_visit,
         statistics=stats,
     )
+    return await with_live_ranks(response, user, mode_enum, db)

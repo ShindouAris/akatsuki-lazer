@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import ActiveUser
 from app.api.deps import DbSession
 from app.api.hubs.metadata import send_multiplayer_room_score_set
-from app.api.hubs.spectator import send_user_score_processed
 from app.api.v2.schemas import BeatmapCompact
 from app.api.v2.schemas import ModResponse
 from app.api.v2.schemas import ScoreResponse
@@ -39,10 +38,8 @@ from app.services.hub_state import get_hub_state_service
 from app.services.pp import PPService
 from app.services.pp import mods_to_bitwise
 from app.services.replay import ReplayStorageService
-from app.services.user_service import get_user_statistics
-from app.services.user_service import refresh_user_hit_accuracy
-from app.services.user_service import refresh_user_pp_and_ranks
-from app.services.user_service import update_user_statistics
+from app.services.score_stats import PERFORMANCE_STATUSES
+from app.services.score_worker import get_score_worker
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -296,10 +293,15 @@ async def get_beatmap_scores(
             message="Beatmap not found",
         )
 
-    # Build query
-    query = (
-        select(Score)
-        .options(selectinload(Score.user))
+    # A leaderboard lists each player once, with their best score: rank every score of a player and keep the first
+    # (ties go to the older score).
+    best_of_player = (
+        func.row_number()
+        .over(partition_by=Score.user_id, order_by=(Score.total_score.desc(), Score.id.asc()))
+        .label("player_rank")
+    )
+    ranked_scores = (
+        select(Score.id.label("score_id"), best_of_player)
         .where(
             and_(
                 Score.beatmap_id == beatmap_id,
@@ -307,7 +309,14 @@ async def get_beatmap_scores(
                 Score.ranked.is_(True),
             ),
         )
-        .order_by(Score.total_score.desc())
+        .subquery()
+    )
+    query = (
+        select(Score)
+        .options(selectinload(Score.user))
+        .join(ranked_scores, ranked_scores.c.score_id == Score.id)
+        .where(ranked_scores.c.player_rank == 1)
+        .order_by(Score.total_score.desc(), Score.id.asc())
         .limit(limit)
     )
 
@@ -401,8 +410,10 @@ async def submit_score(
         data["total_score_without_mods"] = score_data.total_score_without_mods
 
     settings = get_settings()
+    # Only ranked/approved beatmaps award pp; loved and qualified maps never do.
+    pp_eligible = ranked and beatmap.status in PERFORMANCE_STATUSES
     calculated_pp: float | None = None
-    if score_data.passed and osu_file_path:
+    if pp_eligible and osu_file_path:
         try:
             pp_service = PPService()
             pp_result = pp_service.calculate_for_score(
@@ -439,6 +450,9 @@ async def submit_score(
                 )
                 if settings.pp_use_server_value_on_mismatch:
                     final_pp = calculated_pp
+
+    if not pp_eligible:
+        final_pp = None
 
     # Create score
     started_at = _normalize_to_utc(score_data.started_at) or _normalize_to_utc(token.created_at)
@@ -525,20 +539,8 @@ async def submit_score(
     except Exception as exc:
         logger.warning("Replay persistence failed for score token %s: %s", token.id, exc)
 
-    stats = await get_user_statistics(db, user.id, GameMode(token.ruleset_id))
-    if stats is not None:
-        await update_user_statistics(db, stats, score)
-    else:
-        logger.warning(
-            "Missing user statistics row for user=%s mode=%s during score submit",
-            user.id,
-            token.ruleset_id,
-        )
-
-    if score_data.passed and ranked:
-        await refresh_user_pp_and_ranks(db, user_id=user.id, mode=GameMode(token.ruleset_id))
-    else:
-        await refresh_user_hit_accuracy(db, user_id=user.id, mode=GameMode(token.ruleset_id))
+    # User statistics (play count, ranked score, pp, ranks, ...) are not computed here. Once the score is
+    # committed it is handed to the score statistics worker, which notifies the client when it is done.
 
     # TODO: Check for new personal best
 
@@ -563,11 +565,11 @@ async def submit_score(
 
     response = _score_to_response(score, rank_global=rank_global)
 
-    # Commit first so UserScoreProcessed is emitted only for persisted scores.
+    # Commit first so the worker only ever sees persisted scores.
     await db.commit()
 
-    # Queue post-submit score-processed notification after HTTP response is sent.
-    background_tasks.add_task(send_user_score_processed, user.id, score.id)
+    # The worker emits UserScoreProcessed once statistics are updated.
+    get_score_worker().enqueue(score.id)
 
     if multiplayer_room_score_event is not None:
         background_tasks.add_task(send_multiplayer_room_score_set, multiplayer_room_score_event)

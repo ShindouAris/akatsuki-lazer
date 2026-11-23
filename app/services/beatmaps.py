@@ -28,6 +28,18 @@ OSU_TOKEN_URL = "https://osu.ppy.sh/oauth/token"
 # Public beatmap CDN (no auth required)
 CATBOY_CDN_URL = "https://catboy.best"
 
+# Where .osz files are downloaded from, tried in order until one answers 200 OK.
+# (name, URL of the .osz, URL of the no-video .osz or None if the mirror offers no such variant)
+DOWNLOAD_MIRRORS: tuple[tuple[str, str, str | None], ...] = (
+    ("catboy.best", CATBOY_CDN_URL + "/d/{id}", CATBOY_CDN_URL + "/d/{id}n"),
+    ("mirror.hinamizawa.ai", "https://mirror.hinamizawa.ai/api/d/{id}", None),
+    (
+        "mirror.nekoha.moe",
+        "https://mirror.nekoha.moe/api/download/{id}",
+        "https://mirror.nekoha.moe/api/download/{id}?noVideo=1",
+    ),
+)
+
 
 @dataclass
 class BeatmapsetSearchResult:
@@ -151,10 +163,9 @@ class BeatmapService:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    def _get_catboy_client(self) -> httpx.AsyncClient:
-        """Get HTTP client for catboy.best CDN (no auth required)."""
+    def _get_download_client(self) -> httpx.AsyncClient:
+        """Get HTTP client for the public download mirrors (no auth required)."""
         return httpx.AsyncClient(
-            base_url=CATBOY_CDN_URL,
             timeout=120.0,
             follow_redirects=True,
         )
@@ -254,28 +265,43 @@ class BeatmapService:
     ) -> AsyncIterator[bytes]:
         """Download a beatmapset as .osz file.
 
-        Uses catboy.best CDN by default (publicly available, no auth required).
+        Streams the first of DOWNLOAD_MIRRORS that answers 200 OK (catboy.best, for instance, answers 403
+        to some clients). Only a failure *before the first byte* moves on to the next mirror: once bytes
+        have been handed to the caller an error is re-raised, as they cannot be taken back. A mirror
+        without a no-video variant serves the full file instead.
         """
-        # Always use catboy.best CDN for downloads - it's public and reliable
-        async for chunk in self._download_from_catboy(beatmapset_id, no_video):
-            yield chunk
+        failures: list[str] = []
 
-    async def _download_from_catboy(
-        self, beatmapset_id: int, no_video: bool = False,
-    ) -> AsyncIterator[bytes]:
-        """Download beatmapset from catboy.best CDN."""
-        path = f"/d/{beatmapset_id}"
-        if no_video:
-            path += "n"  # 'n' suffix for no-video version
+        async with self._get_download_client() as client:
+            for name, url, no_video_url in DOWNLOAD_MIRRORS:
+                target = (no_video_url if no_video and no_video_url else url).format(id=beatmapset_id)
+                started = False
 
-        async with self._get_catboy_client() as client:
-            async with client.stream("GET", path) as response:
-                if response.status_code != 200:
-                    raise Exception(
-                        f"Failed to download beatmapset {beatmapset_id}: {response.status_code}",
+                try:
+                    async with client.stream("GET", target) as response:
+                        if response.status_code != 200:
+                            failures.append(f"{name}: HTTP {response.status_code}")
+                            logger.warning(
+                                "Download of beatmapset %s from %s failed: HTTP %s",
+                                beatmapset_id,
+                                name,
+                                response.status_code,
+                            )
+                            continue
+
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            started = True
+                            yield chunk
+                        return
+                except httpx.HTTPError as e:
+                    if started:
+                        raise
+                    failures.append(f"{name}: {type(e).__name__}")
+                    logger.warning(
+                        "Download of beatmapset %s from %s failed: %s", beatmapset_id, name, type(e).__name__,
                     )
-                async for chunk in response.aiter_bytes(chunk_size=8192):
-                    yield chunk
+
+        raise Exception(f"Failed to download beatmapset {beatmapset_id}: {'; '.join(failures)}")
 
     async def _download_from_osu_api(
         self, beatmapset_id: int, no_video: bool = False,
@@ -387,7 +413,7 @@ class BeatmapService:
         """Fetch beatmap data from mirror service."""
         try:
             client = await self._get_http_client()
-            response = await client.get(f"/api/osu-api/v2/beatmaps/{beatmap_id}")
+            response = await client.get(f"/v2/beatmaps/{beatmap_id}")
 
             if response.status_code == 404:
                 logger.debug(f"Beatmap {beatmap_id} not found on mirror")
@@ -414,7 +440,7 @@ class BeatmapService:
         """Fetch beatmapset data from mirror service."""
         try:
             client = await self._get_http_client()
-            response = await client.get(f"/api/osu-api/v2/beatmapsets/{beatmapset_id}")
+            response = await client.get(f"/v2/beatmapsets/{beatmapset_id}")
 
             if response.status_code == 404:
                 logger.debug(f"Beatmapset {beatmapset_id} not found on mirror")
@@ -435,6 +461,42 @@ class BeatmapService:
             logger.error(f"Error fetching beatmapset {beatmapset_id} from mirror: {e}")
             return None
 
+    async def _lookup_beatmap_from_mirror(self,
+                                             checksum: str | None = None,
+                                             filename: str | None = None,
+                                             beatmap_id: int | None = None):
+        """Lookup beatmapset data from mirror service."""
+
+        try:
+            client = await self._get_http_client()
+            param = {}
+            if checksum:
+                param["checksum"] = checksum
+            if filename:
+                param["filename"] = filename
+            if beatmap_id and beatmap_id > 0:
+                param["beatmap_id"] = beatmap_id
+
+            if not param:
+                return None
+
+            response = await client.get('/v2/beatmaps/lookup', params=param)
+            if response.status_code == 404:
+                logger.debug(f"Beatmap {beatmap_id} not found on mirror")
+                return None
+
+            if response.status_code == 200:
+                beatmapset = response.json()
+                return beatmapset
+
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout fetching beatmapset {beatmap_id} from mirror")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching beatmapset {beatmap_id} from mirror: {e}")
+            return None
+
+
     # ==================== Official osu! API Methods ====================
 
     async def _lookup_beatmap_from_osu_api(
@@ -453,7 +515,6 @@ class BeatmapService:
                     params["checksum"] = checksum
                 if filename:
                     params["filename"] = filename
-
                 if not params:
                     return None
 
