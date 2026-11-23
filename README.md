@@ -76,7 +76,7 @@ docker compose run --rm seed    # once: matchmaking pools and their beatmaps (ne
 - API: `https://localhost:8000/api/v2/` (docs at `/docs`)
 - Spectator and metadata hubs: `https://localhost:8000/spectator`, `/metadata`
 - Multiplayer hub: `https://localhost:8081/multiplayer`
-- PostgreSQL `127.0.0.1:3333`, Redis `127.0.0.1:9090` for tools on the host.
+- PostgreSQL `127.0.0.1:3333`, Redis `127.0.0.1:9090`, SeaweedFS S3 `127.0.0.1:8333` for tools on the host.
 
 Rebuilding `app` or `multiplayer` (`docker compose up -d --build <service>`) drops connected clients and closes
 open rooms; do not do it in the middle of a test. `seed` runs from the same image as `app` (about 300 MB; the
@@ -96,11 +96,36 @@ Settings come from environment variables or `.env` (see `.env.example` for every
 | `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` | must match the client's endpoint configuration |
 | `API_BASE_URL` / `WEBSITE_URL` | use `https://` when testing with the client |
 | `USE_BEATMAP_MIRROR`, `BEATMAP_MIRROR_URL` | beatmap source; with the mirror off, `OSU_API_CLIENT_ID/SECRET` are used |
+| `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | primary object storage for replays and beatmap files (empty `S3_ENDPOINT_URL` = AWS; set it for another S3-compatible service) |
+| `SEAWEEDFS_ENDPOINT_URL`, `SEAWEEDFS_BUCKET`, `SEAWEEDFS_ACCESS_KEY`, `SEAWEEDFS_SECRET_KEY` | the fallback store (SeaweedFS' S3 gateway); `docker compose` sets these for the bundled container |
 | `INTERNAL_API_KEY` | enables `/internal/*`; must equal the Go service's key. Empty disables the internal API |
 | `USE_EXTERNAL_MULTIPLAYER` | `true` when the Go service serves `/multiplayer` so this process does not |
 
 The Go service's own variables (`LISTEN_ADDR`, `PYTHON_API_URL`, `API_CA_FILE`, `JWT_PUBLIC_KEY_FILE`, ...) are
 documented in [`multiplayer/README.md`](multiplayer/README.md); `docker-compose.yml` sets them for you.
+
+## Where replays and beatmaps are stored
+
+Replays (`replays/<score id>.osr`) and beatmap files (`beatmaps/osz/<set>.osz`, `beatmaps/osu/<id>.osu`) are kept
+in object storage (`app/services/storage.py`), with backends tried in this order:
+
+1. **S3**, when `S3_BUCKET` is set (AWS, or any S3-compatible service via `S3_ENDPOINT_URL`);
+2. **SeaweedFS**, when `SEAWEEDFS_ENDPOINT_URL` is set (a container in `docker-compose.yml`, S3 gateway on
+   `127.0.0.1:8333`, data in the `seaweedfs` volume, development keys in `docker/seaweedfs-s3.json`);
+3. **the local disk** (`REPLAYS_PATH`, `BEATMAPS_PATH`), always the last resort.
+
+A write goes to the first backend that accepts it, a read asks them in turn, and a backend that just failed is
+skipped for 30 seconds so an outage does not slow every request (the first failing call can take about
+`STORAGE_TIMEOUT_SECONDS` + 1 s). A file written to the fallback is **not** copied back to S3 when S3 returns, and
+a file that exists only on a backend that is down is unavailable until it is back. `BEATMAPS_PATH` also remains a
+cache, because the PP engine needs files on disk.
+
+Move what is already on the local disk into the object storage (safe to repeat, never deletes anything):
+
+```bash
+docker compose exec app python -m app.storage_migrate --dry-run
+docker compose exec app python -m app.storage_migrate
+```
 
 ## Running without Docker
 

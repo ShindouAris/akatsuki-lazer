@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     replays_path: str = "./data/replays"
     avatars_path: str = "./data/avatars"
 
+    # Object storage for replays and beatmap files (see app/services/storage.py). Backends are tried in this order:
+    # S3 (when s3_bucket is set), SeaweedFS (when seaweedfs_endpoint_url is set), then the local paths above.
+    s3_bucket: str = ""
+    s3_endpoint_url: str = ""  # empty = AWS; set it for another S3-compatible service
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = "us-east-1"
+    seaweedfs_endpoint_url: str = ""  # the S3 gateway, e.g. http://seaweedfs:8333
+    seaweedfs_bucket: str = "akatsuki"
+    seaweedfs_access_key: str = ""
+    seaweedfs_secret_key: str = ""
+    storage_timeout_seconds: float = 5.0  # connect timeout; a backend that does not answer is skipped
+
     # Rate limiting
     rate_limit_requests: int = 1200
     rate_limit_window_seconds: int = 600  # 10 minutes

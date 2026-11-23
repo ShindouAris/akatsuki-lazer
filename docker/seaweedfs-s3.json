@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "akatsuki",
+      "credentials": [
+        { "accessKey": "akatsuki", "secretKey": "akatsuki-dev-secret" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

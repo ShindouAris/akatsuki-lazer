@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import io
 import lzma
 import logging
 import struct
 from hashlib import md5
 from datetime import UTC
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
 from app.protocol.models import FrameDataBundle
 from app.services.pp import mods_to_bitwise
+from app.services.storage import ObjectStorage
+from app.services.storage import get_storage
+from app.services.storage import replay_key
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +23,16 @@ logger = logging.getLogger(__name__)
 class ReplayStorageService:
     """Store and retrieve replay payload files for submitted scores."""
 
-    def __init__(self) -> None:
-        self._settings = get_settings()
+    def __init__(self, storage: ObjectStorage | None = None) -> None:
+        self._storage = storage
 
-    def get_score_replay_path(self, score_id: int) -> Path:
-        """Return the canonical replay file path for a score."""
-        replay_dir = Path(self._settings.replays_path)
-        return replay_dir / f"{score_id}.osr"
+    @property
+    def storage(self) -> ObjectStorage:
+        return self._storage or get_storage()
+
+    async def get_score_replay(self, score_id: int) -> bytes | None:
+        """The stored .osr file of a score, or None when no backend has it."""
+        return await self.storage.get_bytes(replay_key(score_id))
 
     async def persist_score_replay(
         self,
@@ -44,8 +49,8 @@ class ReplayStorageService:
         statistics: dict[str, int],
         mods: list[dict[str, Any]],
         frame_bundles: list[FrameDataBundle],
-    ) -> Path | None:
-        """Persist replay frame bundles as a legacy-compatible .osr file."""
+    ) -> str | None:
+        """Persist replay frame bundles as a legacy-compatible .osr file; returns where it was stored."""
         if not frame_bundles:
             return None
 
@@ -71,40 +76,39 @@ class ReplayStorageService:
             replay_data=replay_data,
         )
 
-        replay_path = self.get_score_replay_path(score_id)
-        replay_path.parent.mkdir(parents=True, exist_ok=True)
-
         mode = ruleset_id if 0 <= ruleset_id <= 3 else 0
         version = _resolve_osu_version(build_id)
         timestamp_ticks = _datetime_to_ticks(ended_at or datetime.now(UTC))
 
-        with replay_path.open("wb") as replay_file:
-            replay_file.write(struct.pack("<BI", mode, version))
-            _write_osr_string(replay_file, beatmap_hash)
-            _write_osr_string(replay_file, username)
-            _write_osr_string(replay_file, replay_hash)
-            replay_file.write(
-                struct.pack(
-                    "<HHHHHHIH?I",
-                    n300,
-                    n100,
-                    n50,
-                    ngeki,
-                    nkatu,
-                    nmiss,
-                    total_score,
-                    max_combo,
-                    perfect,
-                    mods_bitwise,
-                ),
-            )
-            _write_osr_string(replay_file, "")
-            replay_file.write(struct.pack("<QI", timestamp_ticks, len(replay_payload)))
-            replay_file.write(replay_payload)
-            replay_file.write(struct.pack("<q", score_id))
+        replay_file = io.BytesIO()
+        replay_file.write(struct.pack("<BI", mode, version))
+        _write_osr_string(replay_file, beatmap_hash)
+        _write_osr_string(replay_file, username)
+        _write_osr_string(replay_file, replay_hash)
+        replay_file.write(
+            struct.pack(
+                "<HHHHHHIH?I",
+                n300,
+                n100,
+                n50,
+                ngeki,
+                nkatu,
+                nmiss,
+                total_score,
+                max_combo,
+                perfect,
+                mods_bitwise,
+            ),
+        )
+        _write_osr_string(replay_file, "")
+        replay_file.write(struct.pack("<QI", timestamp_ticks, len(replay_payload)))
+        replay_file.write(replay_payload)
+        replay_file.write(struct.pack("<q", score_id))
 
-        logger.info("Persisted replay .osr for score %s at %s", score_id, replay_path)
-        return replay_path
+        key = replay_key(score_id)
+        backend = await self.storage.put_bytes(key, replay_file.getvalue())
+        logger.info("Persisted replay .osr for score %s as %s on %s", score_id, key, backend)
+        return f"{backend}:{key}"
 
 
 def _pick_stat(statistics: dict[str, int], *keys: str) -> int:

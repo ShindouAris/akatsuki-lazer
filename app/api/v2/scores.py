@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi import BackgroundTasks
 from fastapi import Query
 from fastapi import status
-from fastapi.responses import FileResponse
+from fastapi import Response
 from sqlalchemy import and_
 from sqlalchemy import func
 from sqlalchemy import select
@@ -242,7 +242,7 @@ async def download_score_replay(
     db: DbSession,
     user: ActiveUser,
     score_id: int,
-) -> FileResponse:
+) -> Response:
     """Download replay file for a submitted score."""
     result = await db.execute(select(Score).where(Score.id == score_id))
     score = result.scalar_one_or_none()
@@ -255,18 +255,18 @@ async def download_score_replay(
         )
 
     replay_service = ReplayStorageService()
-    replay_path = replay_service.get_score_replay_path(score.id)
-    if not replay_path.exists():
+    replay = await replay_service.get_score_replay(score.id)
+    if replay is None:
         raise OsuError(
             code=status.HTTP_404_NOT_FOUND,
             error="Replay file missing",
             message="Replay file missing",
         )
 
-    return FileResponse(
-        path=str(replay_path),
+    return Response(
+        content=replay,
         media_type="application/octet-stream",
-        filename=f"{score.id}.osr",
+        headers={"Content-Disposition": f'attachment; filename="{score.id}.osr"'},
     )
 
 @router.get("/beatmaps/{beatmap_id}/scores")

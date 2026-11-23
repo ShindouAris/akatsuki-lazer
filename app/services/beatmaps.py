@@ -18,6 +18,9 @@ from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
 from app.models.beatmap import BeatmapStatus
 from app.models.user import User
+from app.services.storage import get_storage
+from app.services.storage import osu_key
+from app.services.storage import osz_key
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +209,15 @@ class BeatmapService:
             await self._http_client.aclose()
             self._http_client = None
 
+    @staticmethod
+    async def _store(key: str, path: Path) -> None:
+        """Copy a freshly cached file into the object storage; failing to do so only costs a later re-download."""
+        try:
+            backend = await get_storage().put_file(key, path)
+            logger.info("Stored %s on %s", key, backend)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not store %s: %s", key, exc)
+
     async def ensure_osu_file(self, beatmap: Beatmap) -> str | None:
         """Ensure a beatmap .osu file is cached locally and return its path."""
         if beatmap.beatmapset_id is None:
@@ -217,23 +229,30 @@ class BeatmapService:
         osu_dir.mkdir(parents=True, exist_ok=True)
         osz_dir.mkdir(parents=True, exist_ok=True)
 
+        # The files live in the object storage; this directory is only a local cache, because the PP engine
+        # needs a path on disk.
+        storage = get_storage()
         osu_file_path = osu_dir / f"{beatmap.id}.osu"
         if osu_file_path.exists():
             return str(osu_file_path)
+        if await storage.download_to(osu_key(beatmap.id), osu_file_path):
+            return str(osu_file_path)
 
         osz_file_path = osz_dir / f"{beatmap.beatmapset_id}.osz"
-        if not osz_file_path.exists():
+        if not osz_file_path.exists() and not await storage.download_to(osz_key(beatmap.beatmapset_id), osz_file_path):
             try:
                 with osz_file_path.open("wb") as osz_file:
                     async for chunk in self.download_beatmapset(beatmap.beatmapset_id):
                         osz_file.write(chunk)
             except Exception as exc:
+                osz_file_path.unlink(missing_ok=True)  # never keep a half downloaded archive
                 logger.error(
                     "Failed to download beatmapset %s for .osu extraction: %s",
                     beatmap.beatmapset_id,
                     exc,
                 )
                 return None
+            await self._store(osz_key(beatmap.beatmapset_id), osz_file_path)
 
         try:
             with zipfile.ZipFile(osz_file_path, "r") as archive:
@@ -246,6 +265,7 @@ class BeatmapService:
                         continue
 
                     osu_file_path.write_bytes(osu_bytes)
+                    await self._store(osu_key(beatmap.id), osu_file_path)
                     return str(osu_file_path)
         except Exception as exc:
             logger.error("Failed to extract .osu file for beatmap %s: %s", beatmap.id, exc)

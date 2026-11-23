@@ -12,6 +12,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHONUTF8: "1"
       PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+      # Replays and beatmap files: the S3_* settings from .env first (when set), then this SeaweedFS.
+      SEAWEEDFS_ENDPOINT_URL: http://seaweedfs:8333
+      SEAWEEDFS_BUCKET: akatsuki
+      SEAWEEDFS_ACCESS_KEY: akatsuki
+      SEAWEEDFS_SECRET_KEY: akatsuki-dev-secret
     entrypoint: []
     command:
       - sh
@@ -37,6 +42,26 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      seaweedfs:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # S3-compatible object store (the fallback for the S3 bucket, and the store when no S3 is configured).
+  # Development credentials: docker/seaweedfs-s3.json. Use your own keys anywhere else.
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - seaweedfs:/data
+      - ./docker/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
 
   multiplayer:
@@ -70,6 +95,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHONUTF8: "1"
       PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+      SEAWEEDFS_ENDPOINT_URL: http://seaweedfs:8333
+      SEAWEEDFS_BUCKET: akatsuki
+      SEAWEEDFS_ACCESS_KEY: akatsuki
+      SEAWEEDFS_SECRET_KEY: akatsuki-dev-secret
     entrypoint: []
     command: ["python", "-m", "app.seeders", "matchmaking"]
     volumes:
@@ -102,3 +131,4 @@ services:
 
 volumes:
   pgdata:
+  seaweedfs:
