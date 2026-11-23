@@ -5,6 +5,7 @@
 services:
   app:
     build: .
+    image: akatsuki-lazer-app
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:youshallnotpass@postgres:5432/osu
@@ -61,6 +62,7 @@ services:
 
   seed:
     build: .
+    image: akatsuki-lazer-app   # same image as app: built once, not twice
     profiles: [tools]
     env_file: .env
     environment:

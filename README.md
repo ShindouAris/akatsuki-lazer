@@ -79,8 +79,8 @@ docker compose run --rm seed    # once: matchmaking pools and their beatmaps (ne
 - PostgreSQL `127.0.0.1:3333`, Redis `127.0.0.1:9090` for tools on the host.
 
 Rebuilding `app` or `multiplayer` (`docker compose up -d --build <service>`) drops connected clients and closes
-open rooms; do not do it in the middle of a test. `seed` has its own image: after changing seeder code run
-`docker compose --profile tools build seed`.
+open rooms; do not do it in the middle of a test. `seed` runs from the same image as `app` (about 300 MB; the
+build is two-stage and needs no compiler), so rebuilding `app` also updates the seeder.
 
 More detail, the client settings table and what was and was not checked: [`docs/LOCAL_CLIENT_TESTING.md`](docs/LOCAL_CLIENT_TESTING.md).
 
