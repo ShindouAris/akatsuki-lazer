@@ -27,6 +27,18 @@ modes, friends and blocks, chat channels and presence, notifications (REST), liv
 official osu! API), cover images, score tokens and submission, score download, PP calculation, beatmap
 leaderboards (one row per player, best score first).
 
+**Boards (nomod / Relax / Autopilot):** like score-service-rs, a play goes to exactly one board, picked from its
+mods when the score is submitted: **RX** → Relax (osu!, taiko, catch), **AP** → Autopilot (osu! only), anything
+else → the vanilla board. Each board has its own beatmap leaderboard, statistics (pp, ranks, ranked score, play
+count, grades, ...), Redis pp ranking and rankings page. Endpoints take `?variant=vanilla|rx|ap`
+(`/beatmaps/{id}/scores` also infers it from `mods=RX`); without it you get the vanilla board. A play above its
+board's pp cap (`PP_CAP_VANILLA/RELAX/AUTOPILOT`, 0 = no cap) is kept but awards no pp.
+
+**Medals:** awarded by the score worker while it processes a play (port of the medal awarders of
+osu-queue-score-statistics): combo, play count, total hits, rank milestones and star rating pass/full combo
+medals, listed in the profile as `user_achievements`. Only vanilla plays earn medals
+(`app/services/medals.py` has the catalogue).
+
 **Spectating:** the `/spectator` hub including the V2 targets (`BeginPlaySessionV2`, `SendFrameDataV2`,
 `EndPlaySessionV2`) the current client uses, with frame buffering in Redis for late watchers.
 
@@ -162,6 +174,13 @@ Run the modified client, then Settings -> Debug -> Server:
 ```bash
 uv run pytest                # Python (SQLite, no services needed)
 cd multiplayer && go test ./...   # Go (no external services needed)
+```
+
+After upgrading an existing database (the migration sorts old scores into boards by their mods), recompute the
+statistics per board and rebuild the Redis index once:
+
+```bash
+docker compose exec app python -m app.services.score_worker rebuild
 ```
 
 Known failing tests that predate the multiplayer work: `tests/test_api.py::test_add_friend_success` and

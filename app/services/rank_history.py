@@ -164,6 +164,7 @@ async def snapshot_ranks(db: AsyncSession, day: date) -> int:
             .join(User, User.id == UserStatistics.user_id)
             .where(
                 UserStatistics.mode == mode,
+                UserStatistics.variant == 0,  # the rank graph follows the vanilla board only
                 UserStatistics.pp > 0,
                 User.is_restricted.is_(False),
                 User.is_bot.is_(False),

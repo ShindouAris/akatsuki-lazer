@@ -13,6 +13,7 @@ from app.models.score import *
 from app.models.user import *
 from app.models.legacy import *
 from app.models.chat import *
+from app.models.medal import *
 from dotenv import load_dotenv
 
 load_dotenv()

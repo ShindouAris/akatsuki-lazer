@@ -5,12 +5,13 @@ Redis is only an *index*; the database stays the source of truth (``user_statist
 with ``ZCOUNT`` instead of scanning the whole statistics table. Players with equal pp share a rank,
 exactly like the SQL ``COUNT(pp > x) + 1`` this replaces.
 
-Keys (per game mode ``m``)::
+Every board (variant: vanilla, Relax, Autopilot) of every game mode ``m`` has its own index
+(``v`` is the variant number, see ``app.services.variant``)::
 
-    leaderboard:pp:m               ZSET  user_id -> pp                (every ranked player)
-    leaderboard:pp:m:VN            ZSET  user_id -> pp                (per country)
-    leaderboard:pp:m:country_of    HASH  user_id -> country           (to move players between countries)
-    leaderboard:pp:m:ready         STRING marker, set once the index was fully built from the database
+    leaderboard:pp:v:m               ZSET  user_id -> pp                (every ranked player)
+    leaderboard:pp:v:m:VN            ZSET  user_id -> pp                (per country)
+    leaderboard:pp:v:m:country_of    HASH  user_id -> country           (to move players between countries)
+    leaderboard:pp:v:m:ready         STRING marker, set once the index was fully built from the database
 
 While the ``ready`` marker is missing the index must not be trusted, so ``ranks`` raises
 ``LeaderboardUnavailable`` and callers fall back to the database.
@@ -26,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserStatistics
+from app.services.variant import Variant
+from app.services.variant import supports_variant
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +50,20 @@ class LeaderboardEntry:
     country: str
     pp: float
     ranked: bool  # False for restricted players and bots; they are removed from the index
+    variant: Variant = Variant.VANILLA
 
 
-def _key(mode: GameMode, country: str | None = None) -> str:
-    base = f"leaderboard:pp:{int(mode)}"
+def _key(mode: GameMode, country: str | None = None, variant: Variant = Variant.VANILLA) -> str:
+    base = f"leaderboard:pp:v{int(variant)}:{int(mode)}"
     return base if country is None else f"{base}:{country.upper()}"
 
 
-def _owner_key(mode: GameMode) -> str:
-    return f"{_key(mode)}:country_of"
+def _owner_key(mode: GameMode, variant: Variant = Variant.VANILLA) -> str:
+    return f"{_key(mode, None, variant)}:country_of"
 
 
-def _ready_key(mode: GameMode) -> str:
-    return f"{_key(mode)}:ready"
+def _ready_key(mode: GameMode, variant: Variant = Variant.VANILLA) -> str:
+    return f"{_key(mode, None, variant)}:ready"
 
 
 def _text(value: Any) -> str | None:
@@ -75,44 +79,52 @@ class Leaderboard:
         # `client` is a redis.asyncio.Redis (decode_responses is optional).
         self._client = client
 
-    async def is_ready(self, mode: GameMode) -> bool:
-        return bool(await self._client.exists(_ready_key(mode)))
+    async def is_ready(self, mode: GameMode, variant: Variant = Variant.VANILLA) -> bool:
+        return bool(await self._client.exists(_ready_key(mode, variant)))
 
-    async def ranks(self, mode: GameMode, pp: float, country: str) -> tuple[int, int]:
+    async def ranks(
+        self,
+        mode: GameMode,
+        pp: float,
+        country: str,
+        variant: Variant = Variant.VANILLA,
+    ) -> tuple[int, int]:
         """Return (global rank, country rank) for a player with ``pp``; ties share a rank."""
-        if not await self.is_ready(mode):
-            raise LeaderboardUnavailable(f"leaderboard for mode {int(mode)} is not built")
+        if not await self.is_ready(mode, variant):
+            raise LeaderboardUnavailable(f"leaderboard for mode {int(mode)} variant {int(variant)} is not built")
 
         above = f"({float(pp)!r}"  # exclusive lower bound => strictly more pp
-        global_ahead = await self._client.zcount(_key(mode), above, "+inf")
-        country_ahead = await self._client.zcount(_key(mode, country), above, "+inf")
+        global_ahead = await self._client.zcount(_key(mode, None, variant), above, "+inf")
+        country_ahead = await self._client.zcount(_key(mode, country, variant), above, "+inf")
         return int(global_ahead) + 1, int(country_ahead) + 1
 
     async def apply(self, entry: LeaderboardEntry) -> None:
         """Insert, move or remove a player. Call this after the statistics transaction committed."""
         member = str(entry.user_id)
         country = entry.country.upper()
+        mode, variant = entry.mode, entry.variant
 
-        previous = _text(await self._client.hget(_owner_key(entry.mode), member))
+        previous = _text(await self._client.hget(_owner_key(mode, variant), member))
         if previous and previous != country:
-            await self._client.zrem(_key(entry.mode, previous), member)
+            await self._client.zrem(_key(mode, previous, variant), member)
 
         if entry.ranked and entry.pp > 0:
-            await self._client.zadd(_key(entry.mode), {member: entry.pp})
-            await self._client.zadd(_key(entry.mode, country), {member: entry.pp})
-            await self._client.hset(_owner_key(entry.mode), member, country)
+            await self._client.zadd(_key(mode, None, variant), {member: entry.pp})
+            await self._client.zadd(_key(mode, country, variant), {member: entry.pp})
+            await self._client.hset(_owner_key(mode, variant), member, country)
         else:
-            await self._client.zrem(_key(entry.mode), member)
-            await self._client.zrem(_key(entry.mode, country), member)
-            await self._client.hdel(_owner_key(entry.mode), member)
+            await self._client.zrem(_key(mode, None, variant), member)
+            await self._client.zrem(_key(mode, country, variant), member)
+            await self._client.hdel(_owner_key(mode, variant), member)
 
-    async def rebuild(self, db: AsyncSession, mode: GameMode) -> int:
-        """Rebuild one mode's index from the database. Returns the number of ranked players."""
+    async def rebuild(self, db: AsyncSession, mode: GameMode, variant: Variant = Variant.VANILLA) -> int:
+        """Rebuild one board's index from the database. Returns the number of ranked players."""
         # Without the marker readers fall back to the database, so a half-built index is never trusted.
-        await self._client.delete(_ready_key(mode))
+        await self._client.delete(_ready_key(mode, variant))
 
-        stale = [_key(mode)]
-        stale += [_text(k) async for k in self._client.scan_iter(match=f"{_key(mode)}:*")]
+        base = _key(mode, None, variant)
+        stale = [base]
+        stale += [_text(k) async for k in self._client.scan_iter(match=f"{base}:*")]
         await self._client.delete(*[k for k in stale if k])
 
         result = await db.execute(
@@ -120,6 +132,7 @@ class Leaderboard:
             .join(User, User.id == UserStatistics.user_id)
             .where(
                 UserStatistics.mode == mode,
+                UserStatistics.variant == int(variant),
                 UserStatistics.pp > 0,
                 User.is_restricted.is_(False),
                 User.is_bot.is_(False),
@@ -129,25 +142,33 @@ class Leaderboard:
 
         for start in range(0, len(rows), _REBUILD_CHUNK):
             chunk = rows[start : start + _REBUILD_CHUNK]
-            await self._client.zadd(_key(mode), {str(uid): pp for uid, pp, _ in chunk})
-            await self._client.hset(_owner_key(mode), mapping={str(uid): cc.upper() for uid, _, cc in chunk})
+            await self._client.zadd(base, {str(uid): pp for uid, pp, _ in chunk})
+            await self._client.hset(
+                _owner_key(mode, variant),
+                mapping={str(uid): cc.upper() for uid, _, cc in chunk},
+            )
 
             by_country: dict[str, dict[str, float]] = {}
             for uid, pp, cc in chunk:
                 by_country.setdefault(cc.upper(), {})[str(uid)] = pp
             for cc, members in by_country.items():
-                await self._client.zadd(_key(mode, cc), members)
+                await self._client.zadd(_key(mode, cc, variant), members)
 
-        await self._client.set(_ready_key(mode), "1")
-        logger.info("Rebuilt leaderboard for mode %s with %d players", int(mode), len(rows))
+        await self._client.set(_ready_key(mode, variant), "1")
+        logger.info("Rebuilt leaderboard for mode %s variant %s with %d players", int(mode), int(variant), len(rows))
         return len(rows)
 
-    async def ensure_built(self, db: AsyncSession) -> list[GameMode]:
-        """Build every mode whose index is missing. Returns the modes that were (re)built.
+    async def ensure_built(self, db: AsyncSession) -> list[tuple[GameMode, Variant]]:
+        """Build every board whose index is missing. Returns the (mode, variant) pairs that were built.
 
         A short-lived lock keeps several processes from rebuilding at the same time.
         """
-        missing = [mode for mode in GameMode if not await self.is_ready(mode)]
+        missing = [
+            (mode, variant)
+            for variant in Variant
+            for mode in GameMode
+            if supports_variant(mode, variant) and not await self.is_ready(mode, variant)
+        ]
         if not missing:
             return []
 
@@ -156,8 +177,8 @@ class Leaderboard:
             return []
 
         try:
-            for mode in missing:
-                await self.rebuild(db, mode)
+            for mode, variant in missing:
+                await self.rebuild(db, mode, variant)
         finally:
             await self._client.delete(_REBUILD_LOCK_KEY)
         return missing

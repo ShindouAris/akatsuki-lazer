@@ -462,6 +462,37 @@ async def test_a_beatmap_leaderboard_lists_each_player_once_with_their_best_scor
 
 
 @pytest.mark.asyncio
+async def test_a_beatmap_has_one_leaderboard_per_board(client: AsyncClient, db_session: AsyncSession) -> None:
+    beatmap = await make_beatmap(db_session, checksum="boards")
+    ana = await make_user(db_session, "boardana")
+    ben = await make_user(db_session, "boardben")
+    data = json.dumps({"mods": [], "statistics": {"great": 10}, "maximum_statistics": {"great": 10}})
+
+    def score(user: User, total: int, variant: int) -> Score:
+        return Score(
+            user_id=user.id, beatmap_id=beatmap.id, ruleset_id=int(GameMode.OSU), variant=variant, data=data,
+            total_score=total, accuracy=99.0, pp=1.0, max_combo=10, rank="A", passed=True, ranked=True,
+        )
+
+    db_session.add_all([
+        score(ana, 900_000, 0), score(ben, 800_000, 0),
+        score(ana, 1_500_000, 1),                         # relax
+        score(ben, 1_200_000, 2), score(ana, 700_000, 2),  # autopilot
+    ])
+    await db_session.commit()
+
+    async def board(**params: str) -> list[tuple[int, int]]:
+        response = await client.get(f"/api/v2/beatmaps/{beatmap.id}/scores", params=params)
+        assert response.status_code == 200, response.text
+        return [(row["user_id"], row["total_score"]) for row in response.json()["scores"]]
+
+    assert await board() == [(ana.id, 900_000), (ben.id, 800_000)], "no mods asked for: the vanilla board"
+    assert await board(variant="rx") == [(ana.id, 1_500_000)]
+    assert await board(variant="ap") == [(ben.id, 1_200_000), (ana.id, 700_000)]
+    assert await board(mods="RX") == [(ana.id, 1_500_000)], "asking for RX scores means the relax board"
+
+
+@pytest.mark.asyncio
 async def test_beatmap_responses_carry_cover_urls_for_the_client(client: AsyncClient, db_session: AsyncSession) -> None:
     beatmap = await make_beatmap(db_session)
     player = await make_user(db_session, "coverviewer")

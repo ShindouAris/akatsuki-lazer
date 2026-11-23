@@ -24,6 +24,8 @@ from app.models.score import Score
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserStatistics
+from app.services.variant import parse_variant
+from app.services.variant import supports_variant
 
 router = APIRouter()
 
@@ -119,8 +121,9 @@ async def get_rankings(
     page: int = Query(1, ge=1),
     country: str | None = Query(None, min_length=2, max_length=2),
     filter: str = Query("all"),
+    variant: str | None = Query(None, description="vanilla, rx or ap"),
 ) -> RankingsResponse:
-    """Get rankings for a ruleset and ranking type."""
+    """Get rankings for a ruleset and ranking type, from one board (vanilla, Relax or Autopilot)."""
     mode = _string_to_mode(ruleset)
     if mode is None:
         raise OsuError(
@@ -147,8 +150,24 @@ async def get_rankings(
     per_page = 50
     offset = (page - 1) * per_page
 
+    try:
+        board = parse_variant(variant)
+    except ValueError:
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Invalid variant",
+            message="variant must be vanilla, rx or ap",
+        ) from None
+    if not supports_variant(mode, board):
+        raise OsuError(
+            code=status.HTTP_400_BAD_REQUEST,
+            error="Unsupported variant",
+            message=f"There is no {board.label} board for this ruleset",
+        )
+
     conditions = [
         UserStatistics.mode == mode,
+        UserStatistics.variant == int(board),
         User.is_restricted.is_(False),
         User.is_bot.is_(False),
     ]
@@ -219,6 +238,7 @@ async def get_user_score_rank(
     user_id: int,
     mode: str | None = Query(None),
     scoreType: str | None = Query("best"),
+    variant: str | None = Query(None, description="vanilla, rx or ap"),
 ) -> UserScoreAggregateResponse:
     """Get aggregated ranking info for a user's score."""
     user = await db.get(User, user_id)
@@ -254,6 +274,7 @@ async def get_user_score_rank(
         .where(
             and_(
                 Score.user_id == user_id,
+                Score.variant == int(parse_variant(variant)),
                 Score.passed.is_(True),
                 Score.ranked.is_(True),
             ),
@@ -272,6 +293,7 @@ async def get_user_score_rank(
             select(Score.beatmap_id, func.max(Score.total_score).label("max_total"))
             .where(
                 and_(
+                    Score.variant == int(parse_variant(variant)),
                     Score.passed.is_(True),
                     Score.ranked.is_(True),
                 ),

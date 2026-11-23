@@ -16,11 +16,14 @@ from collections.abc import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v2.schemas import RankHistoryResponse
+from app.api.v2.schemas import UserAchievementResponse
 from app.api.v2.schemas import UserResponse
 from app.models.user import GameMode
 from app.models.user import User
 from app.services.leaderboard import get_leaderboard
+from app.services.medals import get_user_medals
 from app.services.rank_history import get_rank_histories
+from app.services.variant import Variant
 
 logger = logging.getLogger(__name__)
 
@@ -39,33 +42,46 @@ def _has_rank(response: UserResponse, user: User) -> bool:
     return not (user.is_restricted or user.is_bot or not response.statistics.is_ranked)
 
 
-async def _current_ranks(response: UserResponse, user: User, mode: GameMode) -> tuple[int | None, int | None]:
+async def _current_ranks(
+    response: UserResponse,
+    user: User,
+    mode: GameMode,
+    variant: Variant = Variant.VANILLA,
+) -> tuple[int | None, int | None]:
     stats = response.statistics
     leaderboard = get_leaderboard()
     if leaderboard is not None and stats.pp is not None:
         try:
-            return await leaderboard.ranks(mode, stats.pp, user.country_acronym)
+            return await leaderboard.ranks(mode, stats.pp, user.country_acronym, variant)
         except Exception as exc:
             logger.debug("Live ranks unavailable for user %s (%s); using stored ranks", user.id, exc)
     return stats.global_rank, stats.country_rank
 
 
-async def with_live_ranks_many(items: Sequence[ProfileItem], db: AsyncSession) -> list[UserResponse]:
-    """Return the responses (same order) with current ranks and rank graphs where they can be determined."""
+async def with_live_ranks_many(
+    items: Sequence[ProfileItem],
+    db: AsyncSession,
+    variant: Variant = Variant.VANILLA,
+) -> list[UserResponse]:
+    """Return the responses (same order) with current ranks and rank graphs where they can be determined.
+
+    ``variant`` is the board the responses were built from; the rank graph only exists for the vanilla board.
+    """
     ranked = [(i, item) for i, item in enumerate(items) if _has_rank(item[0], item[1])]
     if not ranked:
         return [response for response, _, _ in items]
 
-    ranks = await asyncio.gather(*(_current_ranks(*item) for _, item in ranked))
+    ranks = await asyncio.gather(*(_current_ranks(*item, variant) for _, item in ranked))
 
     histories = {}
-    try:
-        histories = await get_rank_histories(
-            db,
-            {(user.id, mode): global_rank for (_, (_, user, mode)), (global_rank, _) in zip(ranked, ranks)},
-        )
-    except Exception:
-        logger.warning("Could not load rank histories", exc_info=True)
+    if variant == Variant.VANILLA:
+        try:
+            histories = await get_rank_histories(
+                db,
+                {(user.id, mode): global_rank for (_, (_, user, mode)), (global_rank, _) in zip(ranked, ranks)},
+            )
+        except Exception:
+            logger.warning("Could not load rank histories", exc_info=True)
 
     results = [response for response, _, _ in items]
     for (index, (response, user, mode)), (global_rank, country_rank) in zip(ranked, ranks):
@@ -78,11 +94,23 @@ async def with_live_ranks_many(items: Sequence[ProfileItem], db: AsyncSession) -
     return results
 
 
+async def with_medals(response: UserResponse, db: AsyncSession) -> UserResponse:
+    """The profile with the medals its owner earned (an empty list if they cannot be loaded)."""
+    try:
+        medals = await get_user_medals(db, response.id)
+    except Exception:
+        logger.warning("Could not load medals of user %s", response.id, exc_info=True)
+        return response
+    achievements = [UserAchievementResponse(achieved_at=at, achievement_id=medal_id) for medal_id, at in medals]
+    return response.model_copy(update={"user_achievements": achievements})
+
+
 async def with_live_ranks(
     response: UserResponse,
     user: User,
     mode: GameMode,
     db: AsyncSession,
+    variant: Variant = Variant.VANILLA,
 ) -> UserResponse:
     """Single profile version of ``with_live_ranks_many``."""
-    return (await with_live_ranks_many([(response, user, mode)], db))[0]
+    return (await with_live_ranks_many([(response, user, mode)], db, variant))[0]

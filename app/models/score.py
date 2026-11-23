@@ -57,6 +57,8 @@ class Score(Base):
         Integer, ForeignKey("beatmaps.id", ondelete="CASCADE"), index=True,
     )
     ruleset_id: Mapped[int] = mapped_column(Integer, default=0, index=True)  # GameMode as int
+    # Board of the play: 0 vanilla, 1 Relax (RX), 2 Autopilot (AP); see app.services.variant.
+    variant: Mapped[int] = mapped_column(Integer, default=0, server_default="0", index=True)
 
     # Score data (combined into single JSON column like official)
     # Contains: mods, statistics, maximum_statistics, total_score_without_mods

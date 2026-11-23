@@ -60,6 +60,13 @@ class UserStatisticsResponse(BaseModel):
     level: dict[str, int] = Field(default_factory=dict)
 
 
+class UserAchievementResponse(BaseModel):
+    """A medal the user earned (same shape as osu-web's ``user_achievements``)."""
+
+    achieved_at: datetime
+    achievement_id: int
+
+
 class UserResponse(UserCompact):
     """Full user profile response."""
 
@@ -71,7 +78,7 @@ class UserResponse(UserCompact):
     created_at: datetime | None = Field(alias="join_date", default=None)
     last_visit: datetime | None = None
     statistics: UserStatisticsResponse | None = None
-
+    user_achievements: list[UserAchievementResponse] = Field(default_factory=list)
 
 
 class Relation(BaseModel):

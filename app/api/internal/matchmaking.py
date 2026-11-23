@@ -36,6 +36,7 @@ from app.models.multiplayer import MultiplayerScore
 from app.models.user import GameMode
 from app.models.user import User
 from app.models.user import UserStatistics
+from app.services.variant import Variant
 from app.services.rating import Elo
 from app.services.rating import card_rating
 from app.services.rating import contests_in
@@ -167,9 +168,14 @@ async def _stats(db: AsyncSession, pool: MatchmakingPool, user_id: int) -> Match
     if await db.get(User, user_id) is None:
         raise _not_found("User")
 
+    # "1v1 RX" and "1v1 AP" pools start from the player's Relax / Autopilot pp, the others from their vanilla pp.
+    pool_words = set(pool.name.upper().split())
+    board = Variant.RELAX if "RX" in pool_words else Variant.AUTOPILOT if "AP" in pool_words else Variant.VANILLA
     pp = await db.scalar(
         select(UserStatistics.pp).where(
-            UserStatistics.user_id == user_id, UserStatistics.mode == GameMode(pool.ruleset_id)
+            UserStatistics.user_id == user_id,
+            UserStatistics.mode == GameMode(pool.ruleset_id),
+            UserStatistics.variant == int(board),
         ),
     )
     start = initial_rating_from_pp(pp or 0.0)

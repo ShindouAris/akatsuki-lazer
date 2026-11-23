@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     pp_validate_client_value: bool = True
     pp_tolerance: float = 0.1
     pp_use_server_value_on_mismatch: bool = False
+    # Relax / Autopilot plays are worth what the same play is without the mod (Akatsuki style) instead of osu!'s
+    # reduced formula, and the server's value always replaces the client's on those boards.
+    pp_relax_autopilot_unnerfed: bool = True
+    # A play worth more pp than its board's cap is kept, but awards no pp (score-service-rs `performance_caps`).
+    # 0 means no cap.
+    pp_cap_vanilla: float = 0.0
+    pp_cap_relax: float = 0.0
+    pp_cap_autopilot: float = 0.0
 
     # Internal API shared with sibling services such as the Go multiplayer hub.
     # Empty disables /internal/* entirely; set a long random value to enable it.

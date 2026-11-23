@@ -1,14 +1,20 @@
 """Current user (/me) endpoints."""
 
 from fastapi import APIRouter
+from fastapi import Query
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
 from app.api.v2.live_ranks import with_live_ranks
+from app.api.v2.live_ranks import with_medals
 from app.api.v2.schemas import RankHistoryResponse
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
 from app.models.user import GameMode
+from app.services.active_board import get_active_board
+from app.services.variant import Variant
+from app.services.variant import parse_variant
+from app.services.variant import supports_variant
 
 router = APIRouter()
 
@@ -23,12 +29,16 @@ def _mode_to_string(mode: GameMode) -> str:
     }.get(mode, "osu")
 
 
-def _get_user_statistics(user: CurrentUser, mode: GameMode) -> UserStatisticsResponse:
-    """Get user statistics for a specific mode."""
+def _get_user_statistics(
+    user: CurrentUser,
+    mode: GameMode,
+    variant: Variant = Variant.VANILLA,
+) -> UserStatisticsResponse:
+    """Get user statistics for a specific mode and board."""
     mode_str = _mode_to_string(mode)
 
     for stats in user.statistics:
-        if stats.mode == mode:
+        if stats.mode == mode and int(stats.variant or 0) == int(variant):
             # User is ranked if they have a global rank
             is_ranked = stats.global_rank is not None
 
@@ -77,7 +87,10 @@ def _get_user_statistics(user: CurrentUser, mode: GameMode) -> UserStatisticsRes
 async def get_current_user(user: CurrentUser, db: DbSession) -> UserResponse:
     """Get the current authenticated user's profile."""
     mode = user.playmode
-    stats = _get_user_statistics(user, mode)
+    board = await get_active_board().get(user.id)
+    if not supports_variant(mode, board):
+        board = Variant.VANILLA
+    stats = _get_user_statistics(user, mode, board)
 
     response = UserResponse(
         id=user.id,
@@ -96,11 +109,16 @@ async def get_current_user(user: CurrentUser, db: DbSession) -> UserResponse:
         last_visit=user.last_visit,
         statistics=stats,
     )
-    return await with_live_ranks(response, user, mode, db)
+    return await with_medals(await with_live_ranks(response, user, mode, db, board), db)
 
 
 @router.get("/me/{mode}", response_model=UserResponse)
-async def get_current_user_mode(user: CurrentUser, db: DbSession, mode: str) -> UserResponse:
+async def get_current_user_mode(
+    user: CurrentUser,
+    db: DbSession,
+    mode: str,
+    variant: str | None = Query(None, description="vanilla, rx or ap"),
+) -> UserResponse:
     """Get the current authenticated user's profile for a specific mode."""
     mode_enum = {
         "osu": GameMode.OSU,
@@ -109,7 +127,10 @@ async def get_current_user_mode(user: CurrentUser, db: DbSession, mode: str) -> 
         "mania": GameMode.MANIA,
     }.get(mode, GameMode.OSU)
 
-    stats = _get_user_statistics(user, mode_enum)
+    board = parse_variant(variant) if variant else await get_active_board().get(user.id)
+    if not supports_variant(mode_enum, board):
+        board = Variant.VANILLA
+    stats = _get_user_statistics(user, mode_enum, board)
 
     response = UserResponse(
         id=user.id,
@@ -128,4 +149,4 @@ async def get_current_user_mode(user: CurrentUser, db: DbSession, mode: str) -> 
         last_visit=user.last_visit,
         statistics=stats,
     )
-    return await with_live_ranks(response, user, mode_enum, db)
+    return await with_medals(await with_live_ranks(response, user, mode_enum, db, board), db)

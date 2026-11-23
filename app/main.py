@@ -27,6 +27,8 @@ from app.core.config import get_settings
 from app.core.database import async_session_maker
 from app.core.database import close_db
 # from app.core.database import init_db
+from app.services.active_board import ActiveBoard
+from app.services.active_board import set_active_board
 from app.services.hub_state import close_hub_state_service
 from app.services.hub_state import get_hub_state_service
 from app.services.leaderboard import Leaderboard
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     score_worker.on_processed = send_user_score_processed
     leaderboard = Leaderboard(hub_state.redis)
     set_leaderboard(leaderboard)  # profiles read live ranks from it
+    set_active_board(ActiveBoard(hub_state.redis))  # which board (vanilla / RX / AP) each player is on
     score_worker.leaderboard = leaderboard
     score_worker.start()
     rank_snapshotter = RankHistorySnapshotter(async_session_maker)

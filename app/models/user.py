@@ -121,13 +121,18 @@ class UserStatistics(Base):
 
     __tablename__ = "user_statistics"
     # Rank lookups and the /rankings page order and count by (mode, pp).
-    __table_args__ = (Index("ix_user_statistics_mode_pp", "mode", "pp"),)
+    __table_args__ = (
+        Index("ix_user_statistics_mode_pp", "mode", "pp"),
+        Index("ix_user_statistics_variant_mode_pp", "variant", "mode", "pp"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True,
     )
     mode: Mapped[GameMode] = mapped_column(Enum(GameMode), index=True)
+    # 0 vanilla, 1 Relax, 2 Autopilot: every (user, mode) has one row per board (app.services.variant).
+    variant: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Ranking
     ranked_score: Mapped[int] = mapped_column(BigInteger, default=0)

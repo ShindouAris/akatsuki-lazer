@@ -32,6 +32,8 @@ from app.models.score import Score
 from app.models.user import GameMode
 from app.services.leaderboard import Leaderboard
 from app.services.score_stats import ProcessedScore
+from app.services.variant import Variant
+from app.services.variant import supports_variant
 from app.services.score_stats import process_score
 from app.services.score_stats import rebuild_user_statistics
 
@@ -197,7 +199,7 @@ class ScoreStatisticsWorker:
 
         try:
             await self.leaderboard.apply(result.leaderboard_entry)
-            if not await self.leaderboard.is_ready(result.mode):
+            if not await self.leaderboard.is_ready(result.mode, result.variant):
                 self._schedule_leaderboard_build()
         except Exception:
             logger.warning("Could not update leaderboard for score %s", result.score_id, exc_info=True)
@@ -218,7 +220,7 @@ class ScoreStatisticsWorker:
             async with self._session_factory() as db:
                 built = await self.leaderboard.ensure_built(db)
             if built:
-                logger.info("Built leaderboard index for modes %s", [int(m) for m in built])
+                logger.info("Built leaderboard index for (mode, variant) %s", [(int(m), int(v)) for m, v in built])
         except Exception:
             logger.warning("Could not build the leaderboard index; ranks use the database", exc_info=True)
 
@@ -242,24 +244,28 @@ async def _rebuild(user_id: int | None, mode: int | None) -> None:
 
     try:
         async with async_session_maker() as db:
-            query = select(Score.user_id, Score.ruleset_id).distinct()
+            query = select(Score.user_id, Score.ruleset_id, Score.variant).distinct()
             if user_id is not None:
                 query = query.where(Score.user_id == user_id)
             if mode is not None:
                 query = query.where(Score.ruleset_id == mode)
             targets = (await db.execute(query)).all()
 
-        for target_user_id, ruleset_id in targets:
+        for target_user_id, ruleset_id, variant_id in targets:
             try:
                 game_mode = GameMode(ruleset_id)
+                variant = Variant(variant_id)
             except ValueError:
                 logger.warning("Skipping unsupported ruleset %s for user %s", ruleset_id, target_user_id)
                 continue
 
             async with async_session_maker() as db:
-                replayed = await rebuild_user_statistics(db, target_user_id, game_mode)
+                replayed = await rebuild_user_statistics(db, target_user_id, game_mode, variant)
                 await db.commit()
-            logger.info("Rebuilt user=%s mode=%s from %d scores", target_user_id, game_mode.name, replayed)
+            logger.info(
+                "Rebuilt user=%s mode=%s variant=%s from %d scores",
+                target_user_id, game_mode.name, variant.label, replayed,
+            )
 
         logger.info("Rebuilt statistics for %d user/mode pairs", len(targets))
     finally:
@@ -278,8 +284,10 @@ async def _rebuild_leaderboard() -> None:
     try:
         leaderboard = Leaderboard(client)
         async with async_session_maker() as db:
-            for mode in GameMode:
-                await leaderboard.rebuild(db, mode)
+            for variant in Variant:
+                for mode in GameMode:
+                    if supports_variant(mode, variant):
+                        await leaderboard.rebuild(db, mode, variant)
     finally:
         await client.aclose()
         await close_db()

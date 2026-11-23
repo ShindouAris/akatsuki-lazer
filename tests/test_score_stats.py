@@ -86,12 +86,14 @@ async def make_score(
     mods: list[dict] | None = None,
     statistics: dict[str, int] | None = None,
     seconds: int = 100,
+    variant: int = 0,
 ) -> Score:
     ended = datetime.now(UTC)
     score = Score(
         user_id=user.id,
         beatmap_id=beatmap.id,
         ruleset_id=0,
+        variant=variant,
         data=json.dumps(
             {
                 "mods": mods or [],

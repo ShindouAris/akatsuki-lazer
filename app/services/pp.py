@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.user import GameMode
+from app.services.variant import Variant
 
 try:
     import rosu_pp_py as rosu_pp
@@ -193,6 +194,41 @@ def _build_result(result: Any) -> dict[str, float | None]:
     }
 
 
+_AUTOMATION_BITS = _MOD_BIT_VALUES["RX"] | _MOD_BIT_VALUES["AP"]
+
+
+def pp_mods_bitwise(mods: list[dict[str, Any]], variant: Variant, unnerfed: bool) -> int:
+    """The mods the pp engine is given for a play.
+
+    osu!'s own formulas cut Relax and Autopilot pp to about a third of what the same play is worth without the
+    mod. Akatsuki's calculator does not, since those boards are ranked on their own. With ``unnerfed`` the
+    play of a Relax / Autopilot board is calculated as if the automation mod were absent (every other mod,
+    notably DT and HD, still counts).
+    """
+    bits = mods_to_bitwise(mods)
+    if unnerfed and variant != Variant.VANILLA:
+        bits &= ~_AUTOMATION_BITS
+    return bits
+
+
+def pp_cap_for(variant: Variant, settings: Any) -> float:
+    """The most pp a single play may award on this board; 0 when the board is uncapped."""
+    cap = {
+        Variant.VANILLA: settings.pp_cap_vanilla,
+        Variant.RELAX: settings.pp_cap_relax,
+        Variant.AUTOPILOT: settings.pp_cap_autopilot,
+    }[variant]
+    return cap if cap and cap > 0 else 0.0
+
+
+def apply_pp_cap(pp: float | None, variant: Variant, settings: Any) -> float | None:
+    """``pp``, or ``None`` (no pp awarded) when it exceeds the board's cap."""
+    cap = pp_cap_for(variant, settings)
+    if pp is None or cap == 0.0 or pp <= cap:
+        return pp
+    return None
+
+
 def mods_to_bitwise(mods: list[dict[str, Any]]) -> int:
     """Convert lazer mod objects to legacy bitwise representation."""
     bitwise = 0
@@ -304,4 +340,4 @@ def _to_rosu_mode(mode: GameMode) -> Any | None:
     if mode == GameMode.MANIA:
         return rosu_pp.GameMode.Mania
 
-    return None
+    return rosu_pp.GameMode.Osu

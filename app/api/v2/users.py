@@ -15,6 +15,7 @@ from app.api.deps import CurrentUser
 from app.api.deps import DbSession
 from app.api.v2.live_ranks import with_live_ranks
 from app.api.v2.live_ranks import with_live_ranks_many
+from app.api.v2.live_ranks import with_medals
 from app.api.v2.schemas import RankHistoryResponse, UserLookupResponse
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserResponse
@@ -26,6 +27,10 @@ from app.models.user import UserRelation
 from app.services.user_service import create_user
 from app.services.user_service import get_user_by_email
 from app.services.user_service import get_user_by_username
+from app.services.active_board import get_active_board
+from app.services.variant import Variant
+from app.services.variant import parse_variant
+from app.services.variant import supports_variant
 
 router = APIRouter()
 root_registration_router = APIRouter()
@@ -144,12 +149,16 @@ def _string_to_mode(mode: str) -> GameMode | None:
     }.get(mode)
 
 
-def _get_user_statistics(user: User, mode: GameMode) -> UserStatisticsResponse:
-    """Get user statistics for a specific mode."""
+def _get_user_statistics(
+    user: User,
+    mode: GameMode,
+    variant: Variant = Variant.VANILLA,
+) -> UserStatisticsResponse:
+    """Get user statistics for a specific mode and board (vanilla, Relax or Autopilot)."""
     mode_str = _mode_to_string(mode)
 
     for stats in user.statistics:
-        if stats.mode == mode:
+        if stats.mode == mode and int(stats.variant or 0) == int(variant):
             # User is ranked if they have a global rank
             is_ranked = stats.global_rank is not None
 
@@ -195,10 +204,14 @@ def _get_user_statistics(user: User, mode: GameMode) -> UserStatisticsResponse:
     )
 
 
-def _user_to_response(user: User, mode: GameMode | None = None) -> UserResponse:
+def _user_to_response(
+    user: User,
+    mode: GameMode | None = None,
+    variant: Variant = Variant.VANILLA,
+) -> UserResponse:
     """Convert User model to UserResponse."""
     mode = mode or user.playmode
-    stats = _get_user_statistics(user, mode)
+    stats = _get_user_statistics(user, mode, variant)
 
     return UserResponse(
         id=user.id,
@@ -377,8 +390,9 @@ async def get_user_mode(
     user_id: int | str,
     mode: str,
     key: str | None = Query(None),
+    variant: str | None = Query(None, description="vanilla, rx or ap"),
 ) -> UserResponse:
-    """Get a user by ID or username with specific mode statistics."""
+    """Get a user by ID or username with specific mode statistics (from one board)."""
     # Determine lookup method
     if key == "username" or (isinstance(user_id, str) and not user_id.isdigit()):
         result = await db.execute(select(User).where(User.username == str(user_id)))
@@ -403,7 +417,11 @@ async def get_user_mode(
             message=f"Invalid ruleset: {mode}",
         )
 
-    return await with_live_ranks(_user_to_response(user, mode_enum), user, mode_enum, db)
+    board = parse_variant(variant) if variant else await get_active_board().get(user.id)
+    if not supports_variant(mode_enum, board):
+        board = Variant.VANILLA
+    response = await with_live_ranks(_user_to_response(user, mode_enum, board), user, mode_enum, db, board)
+    return await with_medals(response, db)
 
 
 @router.post("/users/{user_id}/block")

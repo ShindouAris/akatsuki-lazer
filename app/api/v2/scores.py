@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import ActiveUser
 from app.api.deps import DbSession
+from app.api.deps import OptionalUser
 from app.api.hubs.metadata import send_multiplayer_room_score_set
 from app.api.v2.schemas import BeatmapCompact
 from app.api.v2.schemas import ModResponse
@@ -36,10 +37,15 @@ from app.protocol.models import MultiplayerRoomScoreSetEvent
 from app.services.beatmaps import BeatmapService
 from app.services.hub_state import get_hub_state_service
 from app.services.pp import PPService
-from app.services.pp import mods_to_bitwise
+from app.services.pp import apply_pp_cap
+from app.services.pp import pp_mods_bitwise
 from app.services.replay import ReplayStorageService
 from app.services.score_stats import PERFORMANCE_STATUSES
 from app.services.score_worker import get_score_worker
+from app.services.active_board import get_active_board
+from app.services.variant import Variant
+from app.services.variant import board_for_request
+from app.services.variant import variant_for_mods
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -226,6 +232,7 @@ async def get_score(db: DbSession, score_id: int) -> ScoreResponse:
             select(func.count(Score.id) + 1).where(
                 and_(
                     Score.beatmap_id == score.beatmap_id,
+                    Score.variant == score.variant,
                     Score.passed.is_(True),
                     Score.ranked.is_(True),
                     Score.total_score > score.total_score,
@@ -277,8 +284,15 @@ async def get_beatmap_scores(
     mods: str | None = Query(None),
     type: str = Query("global"),
     limit: int = Query(50, ge=1, le=100),
+    variant: str | None = Query(None, description="vanilla, rx or ap; defaults to what `mods` asks for"),
+    user: OptionalUser = None,
 ) -> dict:
-    """Get top scores on a beatmap."""
+    """Get top scores on a beatmap, from one board (vanilla, Relax or Autopilot).
+
+    A request that names no board gets the board the player is on (see app.services.active_board).
+    """
+    active = await get_active_board().get(user.id) if user is not None else Variant.VANILLA
+    board = board_for_request(variant, mods, active)
     # Fetch beatmap from mirror if not in local database
     service = BeatmapService(db)
     try:
@@ -305,6 +319,7 @@ async def get_beatmap_scores(
         .where(
             and_(
                 Score.beatmap_id == beatmap_id,
+                Score.variant == int(board),
                 Score.passed.is_(True),
                 Score.ranked.is_(True),
             ),
@@ -338,9 +353,11 @@ async def get_beatmap_solo_scores(
     mods: str | None = Query(None),
     type: str = Query("global"),
     limit: int = Query(50, ge=1, le=100),
+    variant: str | None = Query(None),
+    user: OptionalUser = None,
 ) -> dict:
     """Get top solo scores on a beatmap (new lazer format)."""
-    return await get_beatmap_scores(db, beatmap_id, mode, mods, type, limit)
+    return await get_beatmap_scores(db, beatmap_id, mode, mods, type, limit, variant, user)
 
 
 @router.put("/beatmaps/{beatmap_id}/solo/scores/{token_id}", response_model=ScoreResponse)
@@ -410,6 +427,8 @@ async def submit_score(
         data["total_score_without_mods"] = score_data.total_score_without_mods
 
     settings = get_settings()
+    # RX goes to the Relax board, AP to the Autopilot board, everything else to the vanilla board.
+    board = variant_for_mods(data["mods"], token.ruleset_id)
     # Only ranked/approved beatmaps award pp; loved and qualified maps never do.
     pp_eligible = ranked and beatmap.status in PERFORMANCE_STATUSES
     calculated_pp: float | None = None
@@ -420,7 +439,7 @@ async def submit_score(
                 osu_file_path,
                 {
                     "ruleset_id": token.ruleset_id,
-                    "mods_bitwise": mods_to_bitwise(data["mods"]),
+                    "mods_bitwise": pp_mods_bitwise(data["mods"], board, settings.pp_relax_autopilot_unnerfed),
                     "mods": data["mods"],
                     "max_combo": score_data.max_combo,
                     "accuracy": score_data.accuracy,
@@ -435,7 +454,8 @@ async def submit_score(
 
     final_pp = score_data.pp
     if calculated_pp is not None:
-        if final_pp is None:
+        if final_pp is None or (board != Variant.VANILLA and settings.pp_relax_autopilot_unnerfed):
+            # The client's pp for RX / AP is osu!'s reduced value, so the server's always wins on those boards.
             final_pp = calculated_pp
         elif settings.pp_validate_client_value:
             pp_diff = abs(final_pp - calculated_pp)
@@ -454,6 +474,14 @@ async def submit_score(
     if not pp_eligible:
         final_pp = None
 
+    capped_pp = apply_pp_cap(final_pp, board, settings)
+    if final_pp is not None and capped_pp is None:
+        logger.warning(
+            "Score of user %s on beatmap %s is worth %.2fpp, above the %s cap: no pp awarded",
+            user.id, beatmap_id, final_pp, board.label,
+        )
+    final_pp = capped_pp
+
     # Create score
     started_at = _normalize_to_utc(score_data.started_at) or _normalize_to_utc(token.created_at)
     if started_at is None:
@@ -467,6 +495,7 @@ async def submit_score(
         user_id=user.id,
         beatmap_id=beatmap_id,
         ruleset_id=token.ruleset_id,
+        variant=int(board),
         data=json.dumps(data),
         total_score=score_data.total_score,
         accuracy=score_data.accuracy,
@@ -551,6 +580,7 @@ async def submit_score(
             select(func.count(Score.id) + 1).where(
                 and_(
                     Score.beatmap_id == beatmap_id,
+                    Score.variant == score.variant,
                     Score.passed.is_(True),
                     Score.ranked.is_(True),
                     Score.total_score > score.total_score,
@@ -567,6 +597,9 @@ async def submit_score(
 
     # Commit first so the worker only ever sees persisted scores.
     await db.commit()
+
+    # A Relax / Autopilot submit puts the player on that board for 30 minutes; any submit renews the timer.
+    await get_active_board().set(user.id, board)
 
     # The worker emits UserScoreProcessed once statistics are updated.
     get_score_worker().enqueue(score.id)
@@ -585,8 +618,13 @@ async def get_user_scores(
     mode: str | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    variant: str | None = Query(None, description="vanilla, rx or ap"),
 ) -> list[ScoreResponse]:
-    """Get a user's scores by type (best, recent, firsts)."""
+    """Get a user's scores by type (best, recent, firsts).
+
+    `best` and `firsts` come from one board (vanilla unless `variant` says otherwise); `recent` lists the plays
+    of every board unless `variant` narrows it.
+    """
     # Verify user exists
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -604,6 +642,10 @@ async def get_user_scores(
         .options(selectinload(Score.beatmap))
         .where(Score.user_id == user_id)
     )
+    if variant is not None and variant != "":
+        query = query.where(Score.variant == int(board_for_request(variant, None)))
+    elif type in {"best", "firsts"}:
+        query = query.where(Score.variant == 0)
 
     if type == "best":
         query = query.where(

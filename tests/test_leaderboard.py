@@ -23,6 +23,7 @@ from app.services.leaderboard import LeaderboardEntry
 from app.services.leaderboard import LeaderboardUnavailable
 from app.services.score_stats import process_score
 from app.services.score_worker import ScoreStatisticsWorker
+from app.services.variant import Variant
 from tests.test_score_stats import get_stats
 from tests.test_score_stats import make_beatmap
 from tests.test_score_stats import make_score
@@ -181,9 +182,9 @@ async def test_apply_moves_a_player_between_countries(
     await board.apply(entry(7, 100.0, "VN"))
     await board.apply(entry(7, 120.0, "JP"))
 
-    assert "7" not in client.zsets["leaderboard:pp:0:VN"]
-    assert client.zsets["leaderboard:pp:0:JP"] == {"7": 120.0}
-    assert client.zsets["leaderboard:pp:0"] == {"7": 120.0}
+    assert "7" not in client.zsets["leaderboard:pp:v0:0:VN"]
+    assert client.zsets["leaderboard:pp:v0:0:JP"] == {"7": 120.0}
+    assert client.zsets["leaderboard:pp:v0:0"] == {"7": 120.0}
 
 
 @pytest.mark.asyncio
@@ -199,9 +200,9 @@ async def test_apply_removes_unranked_and_zero_pp_players(
 
     await board.apply(entry(7, 100.0 if not ranked else 0.0, ranked=ranked))
 
-    assert client.zsets["leaderboard:pp:0"] == {}
-    assert client.zsets["leaderboard:pp:0:VN"] == {}
-    assert client.hashes["leaderboard:pp:0:country_of"] == {}
+    assert client.zsets["leaderboard:pp:v0:0"] == {}
+    assert client.zsets["leaderboard:pp:v0:0:VN"] == {}
+    assert client.hashes["leaderboard:pp:v0:0:country_of"] == {}
 
 
 @pytest.mark.asyncio
@@ -233,8 +234,8 @@ async def test_rebuild_indexes_only_ranked_players_with_pp(
         count = await board.rebuild(db, OSU)
 
     assert count == 1
-    assert list(client.zsets["leaderboard:pp:0"]) == [str(regular_id)]
-    assert str(idle_id) not in client.zsets["leaderboard:pp:0"]
+    assert list(client.zsets["leaderboard:pp:v0:0"]) == [str(regular_id)]
+    assert str(idle_id) not in client.zsets["leaderboard:pp:v0:0"]
     assert await board.is_ready(OSU)
 
 
@@ -246,10 +247,14 @@ async def test_ensure_built_only_builds_missing_modes_and_respects_the_lock(
     board = Leaderboard(client)
 
     async with session_maker() as db:
-        assert set(await board.ensure_built(db)) == set(GameMode)
+        built = set(await board.ensure_built(db))
+        # Vanilla for every mode, Relax for osu/taiko/catch, Autopilot for osu only.
+        assert {(m, v) for m, v in built if v == Variant.VANILLA} == {(m, Variant.VANILLA) for m in GameMode}
+        assert {m for m, v in built if v == Variant.RELAX} == {GameMode.OSU, GameMode.TAIKO, GameMode.CATCH}
+        assert {m for m, v in built if v == Variant.AUTOPILOT} == {GameMode.OSU}
         assert await board.ensure_built(db) == []  # already built
 
-        await client.delete("leaderboard:pp:2:ready")
+        await client.delete("leaderboard:pp:v0:2:ready")
         client.strings["leaderboard:pp:rebuild_lock"] = "1"  # another process is rebuilding
         assert await board.ensure_built(db) == []
         assert not await board.is_ready(GameMode.CATCH)
@@ -338,8 +343,8 @@ async def test_worker_builds_the_index_on_start_and_keeps_it_updated(
     async with session_maker() as db:
         stats = await get_stats(db, user_id)
 
-    assert client.zsets["leaderboard:pp:0"] == {str(user_id): stats.pp}
-    assert client.zsets["leaderboard:pp:0:VN"] == {str(user_id): stats.pp}
+    assert client.zsets["leaderboard:pp:v0:0"] == {str(user_id): stats.pp}
+    assert client.zsets["leaderboard:pp:v0:0:VN"] == {str(user_id): stats.pp}
     assert stats.pp > 150.0  # includes bonus pp
     assert (stats.global_rank, stats.country_rank) == (1, 1)
 
@@ -377,7 +382,7 @@ async def test_worker_rebuilds_a_flushed_index(session_maker: async_sessionmaker
         stats = await get_stats(db, user_id)
 
     assert await Leaderboard(client).is_ready(OSU)
-    assert client.zsets["leaderboard:pp:0"] == {str(user_id): stats.pp}
+    assert client.zsets["leaderboard:pp:v0:0"] == {str(user_id): stats.pp}
     assert (stats.global_rank, stats.country_rank) == (1, 1)
 
 

@@ -32,7 +32,9 @@ from app.models.user import User
 from app.models.user import UserStatistics
 from app.services.leaderboard import Leaderboard
 from app.services.leaderboard import LeaderboardEntry
+from app.services.medals import award_medals
 from app.services.rank_history import record_rank
+from app.services.variant import Variant
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +89,11 @@ class ProcessedScore:
     score_id: int
     user_id: int
     mode: GameMode
+    variant: Variant = Variant.VANILLA
     # To be applied to the leaderboard index *after* the transaction committed.
     leaderboard_entry: LeaderboardEntry | None = None
+    # Ids of the medals this play earned for the first time.
+    medals: tuple[int, ...] = ()
 
 
 def normalize_accuracy(value: float) -> float:
@@ -272,22 +277,41 @@ def apply_score_counters(stats: UserStatistics, score: Score, beatmap: Beatmap) 
     if (
         score.passed
         and beatmap.status >= BeatmapStatus.RANKED
-        and not (acronyms & _AUTOMATION_MODS)
+        and not (acronyms & _automation_mods_for(stats))
         and score.max_combo > stats.maximum_combo
     ):
         stats.maximum_combo = score.max_combo
 
 
-async def _get_statistics_for_update(db: AsyncSession, user_id: int, mode: GameMode) -> UserStatistics:
-    """Fetch (creating if needed) the statistics row, locked so workers serialise per user/mode."""
+def _automation_mods_for(stats: UserStatistics) -> frozenset[str]:
+    """Automation mods that disqualify a max combo; a board's own mod (RX on Relax, AP on Autopilot) does not."""
+    variant = Variant(int(stats.variant or 0))
+    if variant == Variant.RELAX:
+        return _AUTOMATION_MODS - {"RX"}
+    if variant == Variant.AUTOPILOT:
+        return _AUTOMATION_MODS - {"AP"}
+    return _AUTOMATION_MODS
+
+
+async def _get_statistics_for_update(
+    db: AsyncSession,
+    user_id: int,
+    mode: GameMode,
+    variant: Variant = Variant.VANILLA,
+) -> UserStatistics:
+    """Fetch (creating if needed) the statistics row, locked so workers serialise per user/mode/board."""
     result = await db.execute(
         select(UserStatistics)
-        .where(UserStatistics.user_id == user_id, UserStatistics.mode == mode)
+        .where(
+            UserStatistics.user_id == user_id,
+            UserStatistics.mode == mode,
+            UserStatistics.variant == int(variant),
+        )
         .with_for_update(),
     )
     stats = result.scalars().first()
     if stats is None:
-        stats = UserStatistics(user_id=user_id, mode=mode)
+        stats = UserStatistics(user_id=user_id, mode=mode, variant=int(variant))
         db.add(stats)
         await db.flush()
     return stats
@@ -318,6 +342,7 @@ async def recompute_derived_statistics(
         .where(
             Score.user_id == stats.user_id,
             Score.ruleset_id == int(stats.mode),
+            Score.variant == int(stats.variant or 0),
             Score.passed.is_(True),
             Score.preserve.is_(True),
             Score.ranked.is_(True),
@@ -335,9 +360,11 @@ async def recompute_derived_statistics(
         if field is not None:
             setattr(stats, field, getattr(stats, field) + 1)
 
+    variant = Variant(int(stats.variant or 0))
+
     # Restricted users keep their last known pp and are not ranked.
     if user.is_restricted:
-        return LeaderboardEntry(stats.mode, user.id, user.country_acronym, stats.pp, ranked=False)
+        return LeaderboardEntry(stats.mode, user.id, user.country_acronym, stats.pp, ranked=False, variant=variant)
 
     total_pp, accuracy = calculate_total_performance(r for r in rows if r.status in PERFORMANCE_STATUSES)
     stats.pp = round(total_pp, 5)
@@ -345,9 +372,12 @@ async def recompute_derived_statistics(
     stats.hit_accuracy = stats.accuracy
 
     await _refresh_ranks(db, stats, user, leaderboard)
-    if not user.is_bot and stats.pp > 0 and stats.global_rank is not None:
+    # The 90 day rank graph only follows the vanilla board.
+    if variant == Variant.VANILLA and not user.is_bot and stats.pp > 0 and stats.global_rank is not None:
         await record_rank(db, user.id, stats.mode, stats.global_rank)
-    return LeaderboardEntry(stats.mode, user.id, user.country_acronym, stats.pp, ranked=not user.is_bot)
+    return LeaderboardEntry(
+        stats.mode, user.id, user.country_acronym, stats.pp, ranked=not user.is_bot, variant=variant,
+    )
 
 
 async def _refresh_ranks(
@@ -362,12 +392,17 @@ async def _refresh_ranks(
                 stats.mode,
                 stats.pp,
                 user.country_acronym,
+                Variant(int(stats.variant or 0)),
             )
             return
         except Exception as exc:  # Redis down or index not built yet: the database is always correct.
             logger.warning("Leaderboard unavailable (%s); counting ranks in the database", exc)
 
-    visible = (UserStatistics.mode == stats.mode, UserStatistics.pp > stats.pp)
+    visible = (
+        UserStatistics.mode == stats.mode,
+        UserStatistics.variant == int(stats.variant or 0),
+        UserStatistics.pp > stats.pp,
+    )
 
     global_count = await db.execute(
         select(func.count(UserStatistics.id))
@@ -417,7 +452,8 @@ async def process_score(
         await db.flush()
         return None
 
-    stats = await _get_statistics_for_update(db, score.user_id, mode)
+    variant = Variant(int(score.variant or 0))
+    stats = await _get_statistics_for_update(db, score.user_id, mode, variant)
 
     already_processed = await db.execute(
         select(ScoreProcessHistory.id).where(ScoreProcessHistory.score_id == score.id),
@@ -436,11 +472,22 @@ async def process_score(
     entry = await recompute_derived_statistics(db, stats, user, leaderboard)
     await db.flush()
 
-    return ProcessedScore(score_id=score.id, user_id=score.user_id, mode=mode, leaderboard_entry=entry)
+    # Medals look at the fresh statistics, so they come last; they are part of the same transaction.
+    medals = await award_medals(db, score, beatmap, stats, user)
+
+    return ProcessedScore(
+        score_id=score.id, user_id=score.user_id, mode=mode, variant=variant, leaderboard_entry=entry,
+        medals=tuple(medals),
+    )
 
 
-async def rebuild_user_statistics(db: AsyncSession, user_id: int, mode: GameMode) -> int:
-    """Recompute every statistic of a user/mode from its scores and mark all those scores processed.
+async def rebuild_user_statistics(
+    db: AsyncSession,
+    user_id: int,
+    mode: GameMode,
+    variant: Variant = Variant.VANILLA,
+) -> int:
+    """Recompute every statistic of a user/mode/board from its scores and mark all those scores processed.
 
     Returns the number of scores that were replayed. Does not commit.
     """
@@ -448,7 +495,7 @@ async def rebuild_user_statistics(db: AsyncSession, user_id: int, mode: GameMode
     if user is None:
         return 0
 
-    stats = await _get_statistics_for_update(db, user_id, mode)
+    stats = await _get_statistics_for_update(db, user_id, mode, variant)
     stats.play_count = 0
     stats.play_time = 0
     stats.total_score = 0
@@ -460,7 +507,7 @@ async def rebuild_user_statistics(db: AsyncSession, user_id: int, mode: GameMode
     result = await db.execute(
         select(Score, Beatmap)
         .join(Beatmap, Beatmap.id == Score.beatmap_id)
-        .where(Score.user_id == user_id, Score.ruleset_id == int(mode))
+        .where(Score.user_id == user_id, Score.ruleset_id == int(mode), Score.variant == int(variant))
         .order_by(Score.id),
     )
     pairs = result.all()
