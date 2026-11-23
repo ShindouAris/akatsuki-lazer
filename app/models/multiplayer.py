@@ -25,6 +25,7 @@ class RoomType(StrEnum):
     PLAYLISTS = "playlists"
     HEAD_TO_HEAD = "head_to_head"
     TEAM_VERSUS = "team_versus"
+    RANKED_PLAY = "ranked_play"
 
 
 class RoomStatus(StrEnum):

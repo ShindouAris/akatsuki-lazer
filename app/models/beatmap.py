@@ -31,6 +31,10 @@ class BeatmapStatus(IntEnum):
     LOVED = 4
 
 
+# The statuses of maps that count as ranked (they have a leaderboard and award pp).
+RANKED_STATUSES = (BeatmapStatus.RANKED, BeatmapStatus.APPROVED)
+
+
 class BeatmapSet(Base):
     """Beatmap set (collection of difficulties)."""
 
@@ -82,6 +86,16 @@ class BeatmapSet(Base):
 
     # BPM
     bpm: Mapped[float] = mapped_column(default=0.0)
+
+    # Classification (ported from osu-web: ``genre_id``/``language_id`` on
+    # ``osu_beatmapsets``). FKs intentionally omitted until the Genre/Language
+    # models are ported (MiscSeeder).
+    genre_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    language_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    # Aggregate counts over child beatmaps (maintained by BeatmapSeeder).
+    versions_available: Mapped[int] = mapped_column(Integer, default=0)
+    difficulty_names: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     beatmaps: Mapped[list["Beatmap"]] = relationship(
@@ -145,3 +159,65 @@ class Beatmap(Base):
     beatmapset: Mapped["BeatmapSet"] = relationship(
         "BeatmapSet", back_populates="beatmaps",
     )
+    difficulties: Mapped[list["BeatmapDifficulty"]] = relationship(
+        "BeatmapDifficulty",
+        back_populates="beatmap",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+    failtimes: Mapped[list["BeatmapFailtimes"]] = relationship(
+        "BeatmapFailtimes",
+        back_populates="beatmap",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class BeatmapDifficulty(Base):
+    """Per-ruleset/mod star-rating cache (``osu_beatmap_difficulty``).
+
+    The PHP model uses a composite primary key ``(beatmap_id, mode, mods)``.
+    ``mode`` stores the ruleset id (including converts, e.g. an osu! map with
+    ``mode=1`` is the taiko convert entry) and ``mods`` is a legacy mod bitmask.
+    """
+
+    __tablename__ = "beatmap_difficulties"
+
+    beatmap_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("beatmaps.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    mode: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mods: Mapped[int] = mapped_column(Integer, primary_key=True, default=0)
+    diff_unified: Mapped[float] = mapped_column(default=0.0)
+    last_update: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC),
+    )
+
+    beatmap: Mapped["Beatmap"] = relationship("Beatmap", back_populates="difficulties")
+
+
+class BeatmapFailtimes(Base):
+    """Fail/retry histogram for a beatmap (``osu_beatmap_failtimes``).
+
+    Stored as 100 bucketed counters ``p1``..``p100`` keyed by
+    ``(beatmap_id, type)`` where ``type`` is either ``fail`` or ``exit``.
+    """
+
+    __tablename__ = "beatmap_failtimes"
+
+    beatmap_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("beatmaps.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    type: Mapped[str] = mapped_column(String(8), primary_key=True)
+
+    beatmap: Mapped["Beatmap"] = relationship("Beatmap", back_populates="failtimes")
+
+    # 100 fail-time buckets (p1..p100). Declared via locals() to avoid a
+    # 100-line copy-paste; equivalent to ``p1: Mapped[int] = mapped_column(...)``.
+    for _i in range(1, 101):
+        locals()[f"p{_i}"] = mapped_column(Integer, default=0, nullable=False)
+    del _i

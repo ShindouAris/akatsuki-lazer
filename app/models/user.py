@@ -1,15 +1,18 @@
 """User and authentication models."""
 
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger
 from sqlalchemy import Boolean
+from sqlalchemy import Date
 from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
+from sqlalchemy import Index
 from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import Text
@@ -117,6 +120,8 @@ class UserStatistics(Base):
     """User statistics per game mode."""
 
     __tablename__ = "user_statistics"
+    # Rank lookups and the /rankings page order and count by (mode, pp).
+    __table_args__ = (Index("ix_user_statistics_mode_pp", "mode", "pp"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -155,6 +160,22 @@ class UserStatistics(Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="statistics")
+
+
+class UserRankHistory(Base):
+    """A player's global performance rank on one day (one row per user, mode and day).
+
+    Powers the 90 day rank graph on profiles. ``mode`` is the ruleset id (see ``GameMode``).
+    """
+
+    __tablename__ = "user_rank_history"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    mode: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    rank: Mapped[int] = mapped_column(Integer)
 
 
 class UserRelation(Base):

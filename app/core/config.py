@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     pp_tolerance: float = 0.1
     pp_use_server_value_on_mismatch: bool = False
 
+    # Internal API shared with sibling services such as the Go multiplayer hub.
+    # Empty disables /internal/* entirely; set a long random value to enable it.
+    internal_api_key: str = ""
+
+    # Set when the realtime multiplayer hub runs as a separate service (see ./multiplayer):
+    # this process then stops serving the /multiplayer SignalR endpoint.
+    use_external_multiplayer: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

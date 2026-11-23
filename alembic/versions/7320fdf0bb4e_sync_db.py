@@ -1,8 +1,8 @@
-"""sync database
+"""sync_db
 
-Revision ID: 4c8f0df852f0
+Revision ID: 7320fdf0bb4e
 Revises: 
-Create Date: 2026-04-05 15:47:35.570356
+Create Date: 2026-04-24 14:05:27.914434
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '4c8f0df852f0'
+revision: str = '7320fdf0bb4e'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -98,9 +98,15 @@ def upgrade() -> None:
     sa.Column('discussion_locked', sa.Boolean(), nullable=False),
     sa.Column('download_disabled', sa.Boolean(), nullable=False),
     sa.Column('bpm', sa.Float(), nullable=False),
+    sa.Column('genre_id', sa.Integer(), nullable=True),
+    sa.Column('language_id', sa.Integer(), nullable=True),
+    sa.Column('versions_available', sa.Integer(), nullable=False),
+    sa.Column('difficulty_names', sa.Text(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_beatmapsets_genre_id'), 'beatmapsets', ['genre_id'], unique=False)
+    op.create_index(op.f('ix_beatmapsets_language_id'), 'beatmapsets', ['language_id'], unique=False)
     op.create_index(op.f('ix_beatmapsets_status'), 'beatmapsets', ['status'], unique=False)
     op.create_table('matchmaking_user_elo_history',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -263,6 +269,121 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['beatmapset_id'], ['beatmapsets.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', 'beatmapset_id')
+    )
+    op.create_table('beatmap_difficulties',
+    sa.Column('beatmap_id', sa.Integer(), nullable=False),
+    sa.Column('mode', sa.Integer(), nullable=False),
+    sa.Column('mods', sa.Integer(), nullable=False),
+    sa.Column('diff_unified', sa.Float(), nullable=False),
+    sa.Column('last_update', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['beatmap_id'], ['beatmaps.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('beatmap_id', 'mode', 'mods')
+    )
+    op.create_table('beatmap_failtimes',
+    sa.Column('beatmap_id', sa.Integer(), nullable=False),
+    sa.Column('type', sa.String(length=8), nullable=False),
+    sa.Column('p1', sa.Integer(), nullable=False),
+    sa.Column('p2', sa.Integer(), nullable=False),
+    sa.Column('p3', sa.Integer(), nullable=False),
+    sa.Column('p4', sa.Integer(), nullable=False),
+    sa.Column('p5', sa.Integer(), nullable=False),
+    sa.Column('p6', sa.Integer(), nullable=False),
+    sa.Column('p7', sa.Integer(), nullable=False),
+    sa.Column('p8', sa.Integer(), nullable=False),
+    sa.Column('p9', sa.Integer(), nullable=False),
+    sa.Column('p10', sa.Integer(), nullable=False),
+    sa.Column('p11', sa.Integer(), nullable=False),
+    sa.Column('p12', sa.Integer(), nullable=False),
+    sa.Column('p13', sa.Integer(), nullable=False),
+    sa.Column('p14', sa.Integer(), nullable=False),
+    sa.Column('p15', sa.Integer(), nullable=False),
+    sa.Column('p16', sa.Integer(), nullable=False),
+    sa.Column('p17', sa.Integer(), nullable=False),
+    sa.Column('p18', sa.Integer(), nullable=False),
+    sa.Column('p19', sa.Integer(), nullable=False),
+    sa.Column('p20', sa.Integer(), nullable=False),
+    sa.Column('p21', sa.Integer(), nullable=False),
+    sa.Column('p22', sa.Integer(), nullable=False),
+    sa.Column('p23', sa.Integer(), nullable=False),
+    sa.Column('p24', sa.Integer(), nullable=False),
+    sa.Column('p25', sa.Integer(), nullable=False),
+    sa.Column('p26', sa.Integer(), nullable=False),
+    sa.Column('p27', sa.Integer(), nullable=False),
+    sa.Column('p28', sa.Integer(), nullable=False),
+    sa.Column('p29', sa.Integer(), nullable=False),
+    sa.Column('p30', sa.Integer(), nullable=False),
+    sa.Column('p31', sa.Integer(), nullable=False),
+    sa.Column('p32', sa.Integer(), nullable=False),
+    sa.Column('p33', sa.Integer(), nullable=False),
+    sa.Column('p34', sa.Integer(), nullable=False),
+    sa.Column('p35', sa.Integer(), nullable=False),
+    sa.Column('p36', sa.Integer(), nullable=False),
+    sa.Column('p37', sa.Integer(), nullable=False),
+    sa.Column('p38', sa.Integer(), nullable=False),
+    sa.Column('p39', sa.Integer(), nullable=False),
+    sa.Column('p40', sa.Integer(), nullable=False),
+    sa.Column('p41', sa.Integer(), nullable=False),
+    sa.Column('p42', sa.Integer(), nullable=False),
+    sa.Column('p43', sa.Integer(), nullable=False),
+    sa.Column('p44', sa.Integer(), nullable=False),
+    sa.Column('p45', sa.Integer(), nullable=False),
+    sa.Column('p46', sa.Integer(), nullable=False),
+    sa.Column('p47', sa.Integer(), nullable=False),
+    sa.Column('p48', sa.Integer(), nullable=False),
+    sa.Column('p49', sa.Integer(), nullable=False),
+    sa.Column('p50', sa.Integer(), nullable=False),
+    sa.Column('p51', sa.Integer(), nullable=False),
+    sa.Column('p52', sa.Integer(), nullable=False),
+    sa.Column('p53', sa.Integer(), nullable=False),
+    sa.Column('p54', sa.Integer(), nullable=False),
+    sa.Column('p55', sa.Integer(), nullable=False),
+    sa.Column('p56', sa.Integer(), nullable=False),
+    sa.Column('p57', sa.Integer(), nullable=False),
+    sa.Column('p58', sa.Integer(), nullable=False),
+    sa.Column('p59', sa.Integer(), nullable=False),
+    sa.Column('p60', sa.Integer(), nullable=False),
+    sa.Column('p61', sa.Integer(), nullable=False),
+    sa.Column('p62', sa.Integer(), nullable=False),
+    sa.Column('p63', sa.Integer(), nullable=False),
+    sa.Column('p64', sa.Integer(), nullable=False),
+    sa.Column('p65', sa.Integer(), nullable=False),
+    sa.Column('p66', sa.Integer(), nullable=False),
+    sa.Column('p67', sa.Integer(), nullable=False),
+    sa.Column('p68', sa.Integer(), nullable=False),
+    sa.Column('p69', sa.Integer(), nullable=False),
+    sa.Column('p70', sa.Integer(), nullable=False),
+    sa.Column('p71', sa.Integer(), nullable=False),
+    sa.Column('p72', sa.Integer(), nullable=False),
+    sa.Column('p73', sa.Integer(), nullable=False),
+    sa.Column('p74', sa.Integer(), nullable=False),
+    sa.Column('p75', sa.Integer(), nullable=False),
+    sa.Column('p76', sa.Integer(), nullable=False),
+    sa.Column('p77', sa.Integer(), nullable=False),
+    sa.Column('p78', sa.Integer(), nullable=False),
+    sa.Column('p79', sa.Integer(), nullable=False),
+    sa.Column('p80', sa.Integer(), nullable=False),
+    sa.Column('p81', sa.Integer(), nullable=False),
+    sa.Column('p82', sa.Integer(), nullable=False),
+    sa.Column('p83', sa.Integer(), nullable=False),
+    sa.Column('p84', sa.Integer(), nullable=False),
+    sa.Column('p85', sa.Integer(), nullable=False),
+    sa.Column('p86', sa.Integer(), nullable=False),
+    sa.Column('p87', sa.Integer(), nullable=False),
+    sa.Column('p88', sa.Integer(), nullable=False),
+    sa.Column('p89', sa.Integer(), nullable=False),
+    sa.Column('p90', sa.Integer(), nullable=False),
+    sa.Column('p91', sa.Integer(), nullable=False),
+    sa.Column('p92', sa.Integer(), nullable=False),
+    sa.Column('p93', sa.Integer(), nullable=False),
+    sa.Column('p94', sa.Integer(), nullable=False),
+    sa.Column('p95', sa.Integer(), nullable=False),
+    sa.Column('p96', sa.Integer(), nullable=False),
+    sa.Column('p97', sa.Integer(), nullable=False),
+    sa.Column('p98', sa.Integer(), nullable=False),
+    sa.Column('p99', sa.Integer(), nullable=False),
+    sa.Column('p100', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['beatmap_id'], ['beatmaps.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('beatmap_id', 'type')
     )
     op.create_table('kudosu_history',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -441,6 +562,8 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_kudosu_history_user_id'), table_name='kudosu_history')
     op.drop_index(op.f('ix_kudosu_history_created_at'), table_name='kudosu_history')
     op.drop_table('kudosu_history')
+    op.drop_table('beatmap_failtimes')
+    op.drop_table('beatmap_difficulties')
     op.drop_table('user_beatmap_favorites')
     op.drop_table('oauth_tokens')
     op.drop_index(op.f('ix_beatmaps_status'), table_name='beatmaps')
@@ -462,6 +585,8 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_matchmaking_user_elo_history_opponent_id'), table_name='matchmaking_user_elo_history')
     op.drop_table('matchmaking_user_elo_history')
     op.drop_index(op.f('ix_beatmapsets_status'), table_name='beatmapsets')
+    op.drop_index(op.f('ix_beatmapsets_language_id'), table_name='beatmapsets')
+    op.drop_index(op.f('ix_beatmapsets_genre_id'), table_name='beatmapsets')
     op.drop_table('beatmapsets')
     op.drop_index(op.f('ix_users_username'), table_name='users')
     op.drop_index(op.f('ix_users_email'), table_name='users')
