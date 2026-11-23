@@ -14,6 +14,7 @@ from app.api.hubs.base import SIGNALR_RECORD_SEPARATOR
 from app.core.security import create_token_pair
 from app.protocol.enums import SpectatedUserState
 from app.protocol.models import FrameDataBundle
+from app.protocol.models import FrameHeader
 from app.protocol.models import SpectatorState
 from app.services.hub_state import StoredPlayingState
 
@@ -208,6 +209,99 @@ def test_begin_play_session_rejects_invalid_score_token(
         assert completion["type"] == 3
         assert completion["invocationId"] == "1"
         assert fake_hub_state.playing_by_user == {}
+
+
+def test_a_watcher_sees_what_a_current_client_plays_through_the_v2_methods(
+    spectator_test_client: tuple[TestClient, FakeHubStateService],
+) -> None:
+    """Current clients call BeginPlaySessionV2/SendFrameDataV2/EndPlaySessionV2: the live leaderboard of a room
+    is built from what the watchers receive, so these must reach them like the original methods."""
+    client, fake_hub_state = spectator_test_client
+    state = SpectatorState(beatmap_id=1234, ruleset_id=0, state=SpectatedUserState.PLAYING).to_msgpack()
+    frames = FrameDataBundle(header=FrameHeader(total_score=600000, accuracy=0.9, combo=12, max_combo=12)).to_msgpack()
+    frames[0][6] = None  # a client's own timestamp; the server ignores it, and this test talks JSON
+
+    with client.websocket_connect("/spectator", headers=_token_headers(21)) as watcher_ws:
+        _signalr_handshake(watcher_ws)
+        _send_invocation(watcher_ws, "StartWatchingUser", [22], invocation_id="watch")
+
+        with client.websocket_connect("/spectator", headers=_token_headers(22)) as player_ws:
+            _signalr_handshake(player_ws)
+            _send_invocation(player_ws, "BeginPlaySessionV2", [777, state], invocation_id="begin")
+            began = _read_until(
+                watcher_ws, lambda msg: msg.get("type") == 1 and msg.get("target") == "UserBeganPlaying",
+            )
+            assert began["arguments"][0] == 22 and began["arguments"][1][0] == 1234
+
+            _send_invocation(player_ws, "SendFrameDataV2", [777, frames])
+            sent = _read_until(
+                watcher_ws, lambda msg: msg.get("type") == 1 and msg.get("target") == "UserSentFrames",
+            )
+            assert sent["arguments"][0] == 22
+            assert sent["arguments"][1][0][0] == 600000  # the score the leaderboard shows
+            assert fake_hub_state.replay_bundle_counts == {777: 1}
+
+            _send_invocation(player_ws, "EndPlaySessionV2", [777, int(SpectatedUserState.PASSED)], invocation_id="end")
+            finished = _read_until(
+                watcher_ws, lambda msg: msg.get("type") == 1 and msg.get("target") == "UserFinishedPlaying",
+            )
+            # The state is the one the session began with, with the final state the client reported.
+            assert finished["arguments"][0] == 22
+            assert finished["arguments"][1][0] == 1234
+            assert finished["arguments"][1][3] == int(SpectatedUserState.PASSED)
+
+
+def test_frame_header_writes_received_time_the_way_the_client_reads_a_datetimeoffset() -> None:
+    """The client reads Key 6 as DateTimeOffset: [msgpack timestamp, offset minutes]. An ISO string made it reject
+    every UserSentFrames, so the live leaderboard never moved (verified against the real client's deserializer)."""
+    import msgpack
+
+    header = FrameHeader(total_score=1296).to_msgpack()
+
+    assert isinstance(header[6], list) and len(header[6]) == 2 and header[6][1] == 0
+    assert isinstance(header[6][0], msgpack.Timestamp)
+    packed = msgpack.packb(header)
+    assert bytes.fromhex("92d7ff") in packed  # array(2) of a timestamp ext (type -1, 4 or 8 bytes)
+
+
+class _ListRedis:
+    """The few list commands the replay buffer uses."""
+
+    def __init__(self) -> None:
+        self.lists: dict[str, list[str]] = {}
+
+    async def rpush(self, key: str, value: str) -> int:
+        self.lists.setdefault(key, []).append(value)
+        return len(self.lists[key])
+
+    async def ltrim(self, key: str, start: int, end: int) -> None:
+        del key, start, end
+
+    async def expire(self, key: str, seconds) -> None:
+        del key, seconds
+
+    async def lrange(self, key: str, start: int, end: int) -> list[str]:
+        del start, end
+        return list(self.lists.get(key, []))
+
+
+@pytest.mark.asyncio
+async def test_replay_buffer_stores_the_bundles_the_hub_now_produces() -> None:
+    """The buffered bundles are JSON in Redis; the msgpack timestamp of the header must not break that."""
+    from app.protocol.models import LegacyReplayFrame
+    from app.services.hub_state import HubStateService
+
+    service = HubStateService()
+    service._redis = _ListRedis()  # noqa: SLF001
+    bundle = FrameDataBundle(
+        header=FrameHeader(total_score=1296, combo=3),
+        frames=[LegacyReplayFrame(time=120.5, mouse_x=10.0, mouse_y=20.0)],
+    )
+
+    assert await service.append_replay_frame_bundle(14, bundle) == 1
+
+    stored = await service.get_replay_frame_bundles(14)
+    assert len(stored) == 1 and stored[0].header.total_score == 1296 and stored[0].frames[0].time == 120.5
 
 
 def test_reconnect_restores_watch_and_sends_playing_snapshot(

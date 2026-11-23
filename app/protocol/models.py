@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from typing import Any
+
+import msgpack
 
 from app.protocol.enums import HIT_RESULT_FROM_NAME
 from app.protocol.enums import HIT_RESULT_NAMES
@@ -213,10 +216,12 @@ class FrameHeader:
 
     def to_msgpack(self) -> list:
         """Serialize to MessagePack array format."""
-        # Format received_time as ISO string or use current time
-        received_time_str = (
-            self.received_time.isoformat() if self.received_time else datetime.utcnow().isoformat()
-        )
+        # The client reads a DateTimeOffset: an array of the msgpack timestamp (UTC) and the offset in minutes.
+        # A string here makes it reject the whole bundle, so spectators never receive any frame.
+        moment = self.received_time or datetime.now(UTC)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        received_time = [msgpack.Timestamp.from_datetime(moment.astimezone(UTC)), 0]
         return [
             self.total_score,  # Key 0
             self.accuracy,  # Key 1
@@ -224,7 +229,7 @@ class FrameHeader:
             self.max_combo,  # Key 3
             _stats_to_msgpack(self.statistics),  # Key 4
             self.score_processor_statistics.to_msgpack(),  # Key 5
-            received_time_str,  # Key 6
+            received_time,  # Key 6
             [m.to_msgpack() for m in self.mods] if self.mods is not None else None,  # Key 7
         ]
 

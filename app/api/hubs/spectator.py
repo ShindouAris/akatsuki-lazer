@@ -10,6 +10,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 import time
 
 from fastapi import APIRouter
@@ -473,7 +474,9 @@ async def spectator_websocket(websocket: WebSocket) -> None:
             )
 
             try:
-                if target == "BeginPlaySession":
+                # The V2 methods of current clients carry the same arguments as the originals (BeginPlaySessionV2
+                # is identical; the others gain a leading score token, and the final state is just the enum).
+                if target in ("BeginPlaySession", "BeginPlaySessionV2"):
                     raw_score_token = args[0] if args else None
                     if raw_score_token is None:
                         logger.warning("BeginPlaySession missing score token from user %s", conn.user_id)
@@ -546,8 +549,9 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                     if invocation_id is not None:
                         await send_void_completion(websocket, conn.use_messagepack, invocation_id)
 
-                elif target == "SendFrameData":
-                    frame_data = args[0] if args else {}
+                elif target in ("SendFrameData", "SendFrameDataV2"):
+                    frame_index = 1 if target == "SendFrameDataV2" else 0
+                    frame_data = args[frame_index] if len(args) > frame_index else {}
                     frame_bundle = FrameDataBundle.from_msgpack(frame_data)
 
                     if score_token is not None:
@@ -573,9 +577,20 @@ async def spectator_websocket(websocket: WebSocket) -> None:
                     if invocation_id is not None:
                         await send_void_completion(websocket, conn.use_messagepack, invocation_id)
 
-                elif target == "EndPlaySession":
-                    state_data = args[0] if args else {}
-                    final_state = _normalize_finished_state(SpectatorState.from_msgpack(state_data))
+                elif target in ("EndPlaySession", "EndPlaySessionV2"):
+                    if target == "EndPlaySessionV2":
+                        # (scoreToken, SpectatedUserState): only the final state travels, so the rest of the
+                        # state is what the session began with.
+                        final_state = replace(current_state) if current_state is not None else SpectatorState()
+                        if len(args) > 1 and args[1] is not None:
+                            try:
+                                final_state.state = SpectatedUserState(int(args[1]))
+                            except (TypeError, ValueError):
+                                final_state.state = SpectatedUserState.QUIT
+                        final_state = _normalize_finished_state(final_state)
+                    else:
+                        state_data = args[0] if args else {}
+                        final_state = _normalize_finished_state(SpectatorState.from_msgpack(state_data))
                     conn.is_playing = False
 
                     await hub_state.remove_playing(conn.user_id)

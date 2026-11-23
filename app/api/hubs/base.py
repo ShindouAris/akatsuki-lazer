@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import msgpack
+
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
 
@@ -156,7 +158,14 @@ async def send_invocation(
             "target": target,
             "arguments": serialized_args,
         }
-        await websocket.send_text(json.dumps(msg) + SIGNALR_RECORD_SEPARATOR)
+        await websocket.send_text(json.dumps(msg, default=_json_default) + SIGNALR_RECORD_SEPARATOR)
+
+
+def _json_default(value: Any) -> Any:
+    """JSON form of the values only MessagePack has a native type for."""
+    if isinstance(value, msgpack.Timestamp):
+        return value.to_datetime().isoformat()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 
 async def send_completion(

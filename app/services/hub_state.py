@@ -309,7 +309,10 @@ class HubStateService:
             Current number of buffered bundles for the token.
         """
         key = f"{PREFIX_REPLAY_FRAMES}{score_token}"
-        payload = json.dumps(frame_bundle.to_msgpack())
+        stored = frame_bundle.to_msgpack()
+        # The receive time is a msgpack timestamp (not JSON) and is set again when the frames are read back.
+        stored[0][6] = None
+        payload = json.dumps(stored)
         length = await self.redis.rpush(key, payload)
 
         if length > MAX_REPLAY_FRAME_BUNDLES:
