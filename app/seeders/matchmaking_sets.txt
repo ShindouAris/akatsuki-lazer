@@ -1,0 +1,21 @@
+# One beatmapset id per line. Anything after # is a comment.
+# Used by `python -m app.seeders matchmaking` (override the path with MATCHMAKING_SEED_SETS).
+#
+# 118 = TRF - Survival dAnce (contains beatmap 259, osu-server-spectator's debug map).
+#       Its maps are only ~11s to 81s long: fine for testing downloads, far too few cards for a real duel.
+#       A real pool needs a few dozen maps spread over the star rating range you want to offer.
+118
+
+# ranked osu!standard sets picked from the catboy.best search (dev defaults)
+2266325
+2449365
+2508554
+2515924
+2543018
+2563063
+2564707
+2595047
+2605434
+2616913
+2646603
+2647664
