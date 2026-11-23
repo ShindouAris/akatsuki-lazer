@@ -1,0 +1,17 @@
+{
+  "state": {
+    "host_id": null,
+    "name": "Ranked play: a vs b",
+    "password": "secret",
+    "type": "ranked_play",
+    "queue_mode": "host_only",
+    "status": "idle",
+    "participant_count": 0,
+    "participant_ids": [],
+    "max_participants": null,
+    "auto_skip": false,
+    "auto_start_seconds": 0,
+    "current_playlist_item_id": null
+  },
+  "items": []
+}

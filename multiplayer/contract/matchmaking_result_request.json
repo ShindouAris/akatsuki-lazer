@@ -1,0 +1,10 @@
+{
+  "room_id": 42,
+  "ranked": true,
+  "played": true,
+  "winner": 7,
+  "players": [
+    {"user_id": 7, "life": 600000},
+    {"user_id": 8, "life": 0}
+  ]
+}

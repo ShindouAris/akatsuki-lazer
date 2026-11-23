@@ -1,0 +1,18 @@
+{
+  "host_id": 7,
+  "name": "renamed",
+  "password": "secret",
+  "type": "team_versus",
+  "queue_mode": "all_players_round_robin",
+  "status": "playing",
+  "participant_count": 3,
+  "participant_ids": [
+    7,
+    8,
+    9
+  ],
+  "max_participants": 4,
+  "auto_skip": false,
+  "auto_start_seconds": 15,
+  "current_playlist_item_id": 9001
+}

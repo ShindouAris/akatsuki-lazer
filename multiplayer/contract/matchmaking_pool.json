@@ -1,0 +1,12 @@
+{
+  "id": 3,
+  "ruleset_id": 0,
+  "variant_id": 0,
+  "name": "1v1 RX",
+  "type": "ranked_play",
+  "active": true,
+  "lobby_size": 2,
+  "rating_search_radius": 200,
+  "rating_search_radius_max": 9999,
+  "rating_search_radius_exp": 30
+}
