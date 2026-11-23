@@ -1,387 +1,155 @@
-# py-lazer-server
+# akatsuki-lazer
 
-A Python implementation of the osu! lazer server backend.
+A server backend for the osu! lazer client, written in Python (FastAPI) with a Go service for realtime multiplayer.
+It is meant to be used with a modified client: <https://github.com/ShindouAris/osu>.
 
-## Implementation Status
+```
+ osu! lazer client
+   |  HTTPS  :8000   REST /api/v2, OAuth, /spectator, /metadata   -> app        (Python, FastAPI)
+   |  HTTPS  :8081   /multiplayer (SignalR + MessagePack)         -> multiplayer (Go)
+                                                                       |  /internal/*  (X-Internal-Key)
+                                                                       v
+                                                    app  <->  PostgreSQL + Redis
+```
 
-### ✅ Core Features Implemented & Working
+| Part | Where | Does |
+|---|---|---|
+| `app` | `app/` | REST API (`/api/v2`), OAuth2/JWT, scores, beatmaps, chat, spectator and metadata hubs, internal API |
+| `multiplayer` | `multiplayer/` | rooms, ranked play, matchmaking, duels; stores everything through the app's internal API |
+| `seed` | `app/seeders/` | fills the matchmaking pools with ranked beatmaps |
 
-**Authentication & Users**
-- User registration and login (OAuth2 with JWT tokens)
-- User profile management
-- Basic user statistics for all game modes
-- User lookup by ID or username
+## What works
 
-**Beatmaps**
-- Beatmap lookup by checksum, filename, or ID
-- Beatmapset search and details
-- Beatmapset downloads
+**Players and social:** registration, login (OAuth2 password and refresh tokens), profiles and statistics for all
+modes, friends and blocks, chat channels and presence, notifications (REST), live rank lookup, rank history.
 
-**Social Features**
-- Friends list management (add/remove friends)
-- User blocking system
-- Basic chat channels and presence
-- Chat updates and acknowledgments
+**Beatmaps and scores:** lookup by id, checksum or filename, beatmapset search and download (from a mirror or the
+official osu! API), cover images, score tokens and submission, score download, PP calculation, beatmap
+leaderboards (one row per player, best score first).
 
-**Multiplayer** *(except real-time multiplayer)*
-- Room creation and listing
-- Basic room management
-- Room leaderboards
-- User join/leave operations
+**Spectating:** the `/spectator` hub including the V2 targets (`BeginPlaySessionV2`, `SendFrameDataV2`,
+`EndPlaySessionV2`) the current client uses, with frame buffering in Redis for late watchers.
 
-**Scores**
-- Basic score retrieval
-- Score download functionality
-- Score submission pipeline (token-based)
+**Multiplayer (Go service):**
+- Lobby and rooms: create, join (with password), host and queue modes, playlist items, mods, ready/start/abort,
+  skip votes, kick, host transfer, invitations.
+- Head-to-head and **team versus** rooms (players are split between the red and blue team and can switch).
+- **Start timers:** the host's "Start in..." button and per-room auto start.
+- Room scores and leaderboards (`/api/v2/rooms/{id}/playlist/{item}/scores`) and the lobby list
+  (`GET /api/v2/rooms?category=realtime`).
+- **Ranked play and matchmaking:** pools (`1v1 Nomod`, `1v1 RX`, `1v1 AP`), rating-based pairing (OpenSkill),
+  duels, card hands, discard/play stages and damage rules.
 
-**Real-time Hubs** (ASP.NET Core SignalR protocol)
-- `/spectator` - Live gameplay spectating and frame data
-- `/multiplayer` - Real-time multiplayer room coordination
-- `/metadata` - User presence tracking and online status
-- MessagePack binary serialization support
-- Variable-length integer (VarInt) message framing
-
-### 🟡 Partially Implemented
-
-**Notifications**
-- Basic notification retrieval
-- Mark as read functionality
-- *Missing: WebSocket real-time notifications*
-
-**PP Calculation**
-- Basic PP calculation endpoints
-- *Missing: Advanced calculation features*
-
-### ❌ Not Yet Implemented
-
-* **Forum System** - Complete forum functionality
-* **Comments System** - User comments on content
-* **Beatmap Discussions** - Beatmap-specific discussions
-* **Matches System** - Match history and details
-* **News System** - News posts and articles
-* **Wiki System** - Documentation wiki
-* **Score Pins** - Pinning scores to profile
-* **Seasonal Backgrounds** - Seasonal theme system
-* **Spotlights** - Featured content
-* **Teams** - Team management
-
-### Statistics
-- **Total OpenAPI endpoints**: 116
-- **Implemented endpoints**: 18 (15.5% matching OpenAPI spec)
-- **Akatsuki-specific endpoints**: 32 (additional custom implementations)
-- **Real-time hubs**: 3 (fully implemented)
-
-*Note: Multiplayer real-time coordination works via SignalR hubs, but some REST endpoints for match history and detailed room events are missing.*
-
-## Features
-
-- **REST API** (`/api/v2/`) - Compatible with osu! lazer client
-  - User authentication (OAuth2 with JWT tokens)
-  - User profiles and statistics (all game modes)
-  - Beatmap and beatmapset endpoints
-  - Score submission and retrieval
-  - Multiplayer room management
-  - Friends and blocks (with database persistence)
-  - Chat channels and messaging
-  - Notifications with WebSocket support
-  - Seasonal backgrounds
-
-- **Real-time Hubs** (ASP.NET Core SignalR protocol)
-  - `/spectator` - Live gameplay spectating and frame data
-  - `/multiplayer` - Real-time multiplayer room coordination
-  - `/metadata` - User presence tracking and online status
-  - MessagePack binary serialization support
-  - Variable-length integer (VarInt) message framing
+**Not implemented:** forums, comments, beatmap discussions, news, wiki, score pins, spotlights, teams (site
+feature), real-time notifications over WebSocket, scoring per team in team versus results, free-style rooms.
+Real-client testing is manual: expect rough edges when two clients play ranked play.
 
 ## Requirements
 
-- Python 3.11+
-- SQLite (default) or PostgreSQL
-- uv (recommended) or pip
-- Redis (required for caching)
-- Docker (optional, for containerized deployment)
+- Docker with Compose (the supported way to run everything), **or**
+- Python 3.11+, [uv](https://docs.astral.sh/uv/), PostgreSQL (SQLite works for tests), Redis, Go 1.23+ for the
+  multiplayer service.
 
-## Installation
+## Quick start (Docker)
+
+The client only talks HTTPS, so the stack runs behind a development certificate authority.
 
 ```bash
-# Clone or navigate to the repository
-cd py_lazer_server
+cp .env.example .env            # then edit it: SECRET_KEY, OAUTH_CLIENT_SECRET, INTERNAL_API_KEY (required)
 
-# Using uv (recommended)
-uv sync
+# JWT signing keys: the app reads cert/private.pem and cert/public.pem (it does not create them), and the Go
+# service verifies tokens with public.pem.
+mkdir -p cert
+openssl genrsa -out cert/private.pem 2048
+openssl rsa -in cert/private.pem -pubout -out cert/public.pem
 
-# Or using pip
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-pip install -e ".[dev]"
+# development certificates into ./dev-certs (git-ignored; contains private keys)
+# (-keep-ca issues a new server certificate from the existing authority, -force replaces the authority too)
+cd multiplayer && go run ./cmd/devcert && cd ..
+# trust the CA for your user (Windows; a confirmation dialog appears)
+certutil -user -addstore Root "dev-certs\ca.pem"
+
+docker compose up -d --build    # postgres, redis, app (migrates on start), multiplayer
+docker compose run --rm seed    # once: matchmaking pools and their beatmaps (needs the beatmap mirror)
 ```
+
+- API: `https://localhost:8000/api/v2/` (docs at `/docs`)
+- Spectator and metadata hubs: `https://localhost:8000/spectator`, `/metadata`
+- Multiplayer hub: `https://localhost:8081/multiplayer`
+- PostgreSQL `127.0.0.1:3333`, Redis `127.0.0.1:9090` for tools on the host.
+
+Rebuilding `app` or `multiplayer` (`docker compose up -d --build <service>`) drops connected clients and closes
+open rooms; do not do it in the middle of a test. `seed` has its own image: after changing seeder code run
+`docker compose --profile tools build seed`.
+
+More detail, the client settings table and what was and was not checked: [`docs/LOCAL_CLIENT_TESTING.md`](docs/LOCAL_CLIENT_TESTING.md).
 
 ## Configuration
 
-The server uses environment variables or a `.env` file:
+Settings come from environment variables or `.env` (see `.env.example` for every key):
 
-```env
-# Server
-DEBUG=true
-HOST=0.0.0.0
-PORT=8000
+| Variable | Meaning |
+|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://...` (SQLite `sqlite+aiosqlite:///./osu.db` for quick local runs) |
+| `REDIS_URL` | Redis, required for caching and the spectator frame buffer |
+| `SECRET_KEY` | change in production (`openssl rand -hex 32`) |
+| `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` | must match the client's endpoint configuration |
+| `API_BASE_URL` / `WEBSITE_URL` | use `https://` when testing with the client |
+| `USE_BEATMAP_MIRROR`, `BEATMAP_MIRROR_URL` | beatmap source; with the mirror off, `OSU_API_CLIENT_ID/SECRET` are used |
+| `INTERNAL_API_KEY` | enables `/internal/*`; must equal the Go service's key. Empty disables the internal API |
+| `USE_EXTERNAL_MULTIPLAYER` | `true` when the Go service serves `/multiplayer` so this process does not |
 
-# Database
-DATABASE_URL=sqlite+aiosqlite:///./osu.db
-# or for PostgreSQL:
-# DATABASE_URL=postgresql+asyncpg://user:pass@localhost/osu
+The Go service's own variables (`LISTEN_ADDR`, `PYTHON_API_URL`, `API_CA_FILE`, `JWT_PUBLIC_KEY_FILE`, ...) are
+documented in [`multiplayer/README.md`](multiplayer/README.md); `docker-compose.yml` sets them for you.
 
-# Security
-SECRET_KEY=your-secret-key-here
-
-# OAuth2 Client (must match osu! client configuration)
-OAUTH_CLIENT_ID=5
-OAUTH_CLIENT_SECRET=change-me
-```
-
-## Running
+## Running without Docker
 
 ```bash
-# Using uv
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv sync                                   # or: python -m venv .venv && pip install -e ".[dev]"
+alembic upgrade head
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    --ssl-keyfile dev-certs/localhost-key.pem --ssl-certfile dev-certs/localhost.pem
 
-# Or using python directly
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+cd multiplayer && go run ./cmd/multiplayer      # needs the environment from multiplayer/README.md
+python -m app.seeders matchmaking               # matchmaking pools
 ```
 
-The server will be available at:
-- API: `http://localhost:8000/api/v2/`
-- SignalR hubs: `http://localhost:8000/spectator`, `/multiplayer`, `/metadata`
-- API docs: `http://localhost:8000/docs`
+`scripts/dev.ps1` automates this on Windows (containers for PostgreSQL/Redis, migrations, seed, two windows).
 
-## Connecting osu! lazer
+## Connecting the client
 
-Using my Modified Client:
-[Here](https://github.com/ShindouAris/osu.git)
+Run the modified client, then Settings -> Debug -> Server:
 
-Then:
-
-1. Modify `osu.Game/Online/DevelopmentEndpointConfiguration.cs`:
-```csharp
-namespace osu.Game.Online
-{
-    public class DevelopmentEndpointConfiguration : EndpointConfiguration
-    {
-        public DevelopmentEndpointConfiguration()
-        {
-            WebsiteUrl = APIUrl = @"https://localhost:8000";
-            APIClientSecret = @"change-ts"; // <- Modify this to match the OAUTH_CLIENT_SECRET in .env (this project)
-            APIClientID = "5";
-            SpectatorUrl = "https://localhost:8000/spectator";
-            MultiplayerUrl = "https://localhost:8000/multiplayer";
-            MetadataUrl = "https://localhost:8000/metadata";
-        }
-    }
-}
-
-```
-
-2. To use all functionality, it is recommended to use https connection
-```bash
-# Install mkcert
-choco install mkcert   # Windows
-brew install mkcert    # macOS
-sudo apt install mkcert # Linux
-
-# Init CA local
-mkcert -install
-
-# Generate cert for localhost
-mkcert localhost 127.0.0.1 ::1
-```
+| Setting | Value |
+|---|---|
+| Use custom server | on |
+| Server URL | `https://localhost:8000` |
+| Spectator / Metadata socket URL | `https://localhost:8000` (the client appends the path) |
+| Multiplayer socket URL | `https://localhost:8081` |
+| Client ID / secret | `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` from `.env` |
 
 > [!IMPORTANT]
-> The server must run with https so the game can connect to the hubs, otherwise it won't work!
+> Everything must be served over HTTPS and the development CA must be trusted, otherwise the client cannot
+> reach the hubs.
 
-3. Run the client
+## Tests
+
 ```bash
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile=localhost-key.pem --ssl-certfile=localhost.pem
+uv run pytest                # Python (SQLite, no services needed)
+cd multiplayer && go test ./...   # Go (no external services needed)
 ```
 
-4. Enjoy the ~~broken~~ dev server 🥀🥀
+Known failing tests that predate the multiplayer work: `tests/test_api.py::test_add_friend_success` and
+`::test_get_user_score_rank`.
 
-> [!TIP]
-> IF anything is not working, dm on [Discord](https://discord.chisadin.site) for support, issues is not present because this is a fork.
-
-## API Endpoints (Implemented)
-
-### ✅ Working Endpoints
-
-#### Authentication
-- `POST /oauth/token` - Get access token (username/password grant)
-
-#### Current User
-- `GET /api/v2/me` - Current user profile
-- `GET /api/v2/me/{mode}` - Current user with mode-specific stats
-
-#### Users
-- `GET /api/v2/users/{id}` - Get user by ID
-- `GET /api/v2/users/{id}/{mode}` - Get user with mode-specific stats
-- `GET /api/v2/users/lookup` - Lookup user by ID or username
-- `POST /api/v2/users` - Register new user
-- `GET /api/v2/users/{id}/recent_activity` - Get user recent activity
-- `GET /api/v2/users/{id}/kudosu` - Get user kudosu history
-- `GET /api/v2/users/{id}/beatmapsets/{type}` - Get user beatmaps (favourite/graveyard/etc.)
-- `GET /api/v2/users/{id}/beatmaps/most_played` - Get user's most played beatmaps
-
-#### Friends & Blocks
-- `GET /api/v2/friends` - List friends
-- `POST /api/v2/friends` - Add friend
-- `DELETE /api/v2/friends/{target_id}` - Remove friend
-- `GET /api/v2/blocks` - List blocked users
-- `POST /api/v2/blocks` - Block user
-- `DELETE /api/v2/blocks/{target_id}` - Unblock user
-- `POST /api/v2/users/{id}/block` - Block specific user
-- `DELETE /api/v2/users/{id}/block` - Unblock specific user
-
-#### Chat
-- `GET /api/v2/chat/channels` - List chat channels
-- `GET /api/v2/chat/presence` - Get chat presence
-- `GET /api/v2/chat/updates` - Get chat updates (polling)
-- `POST /api/v2/chat/ack` - Acknowledge messages
-
-#### Notifications
-- `GET /api/v2/notifications` - Get notifications
-- `POST /api/v2/notifications/mark-read` - Mark as read
-
-#### Beatmaps
-- `GET /api/v2/beatmaps/{id}` - Get beatmap
-- `GET /api/v2/beatmaps/lookup` - Lookup by checksum/filename/id
-- `GET /api/v2/beatmaps` - List beatmaps
-- `GET /api/v2/beatmaps/{id}/scores` - Get beatmap scores
-- `GET /api/v2/beatmaps/{id}/solo-scores` - Get solo scores for beatmap
-- `POST /api/v2/beatmaps/{id}/solo/scores` - Request score token
-- `PUT /api/v2/beatmaps/{id}/solo/scores/{token}` - Submit score
-
-#### Beatmapsets
-- `GET /api/v2/beatmapsets/search` - Search beatmapsets
-- `GET /api/v2/beatmapsets/{id}` - Get beatmapset
-- `GET /api/v2/beatmapsets/{id}/download` - Download beatmapset
-
-#### Scores
-- `GET /api/v2/scores/{id}` - Get score by ID
-- `GET /api/v2/scores/{id}/download` - Download score replay
-- `GET /api/v2/users/{id}/scores/{type}` - Get user scores (best/recent/firsts/rank)
-
-#### Multiplayer
-- `GET /api/v2/rooms` - List rooms
-- `POST /api/v2/rooms` - Create room
-- `GET /api/v2/rooms/{id}` - Get room details
-- `GET /api/v2/rooms/{id}/leaderboard` - Get room leaderboard
-- `PUT /api/v2/rooms/{id}/users/{user_id}` - Join room
-- `DELETE /api/v2/rooms/{id}/users/{user_id}` - Leave room
-
-#### PP Calculation
-- `GET /api/v2/pp/calculate` - Calculate PP
-- `POST /api/v2/pp/calculate` - Calculate PP (POST version)
-
-#### Rankings
-- `GET /api/v2/rankings/{ruleset}/{type}` - Get rankings
-
-#### Tags
-- `GET /api/v2/tags` - Get tags
-
-### 🔄 Endpoints in Main Application
-
-These endpoints are implemented in `app/main.py`:
-
-- `GET /api/v2/changelog/builds` - Get available client builds
-- `GET /api/v2/seasonal-backgrounds` - Seasonal background images (placeholder)
-- `GET /api/v2/news` - News posts (placeholder)
-
-### ❌ Missing Major Endpoints
-
-See `not-implement/implementation-status.md` for complete list of unimplemented endpoints including:
-- Forum system (11 endpoints)
-- Comments system (7 endpoints)
-- Beatmap discussions (3 endpoints)
-- Matches system (2 endpoints)
-- Score pins (3 endpoints)
-- And many more...
-
-## SignalR Hubs
-
-The server implements ASP.NET Core SignalR protocol for real-time communication:
-
-### Spectator Hub (`/spectator`)
-- `BeginPlaySession` - Start spectating session
-- `EndPlaySession` - End spectating session
-- `SendFrameData` - Send gameplay frame data
-- `StartWatchingUser` / `EndWatchingUser` - Watch/unwatch players
-
-### Multiplayer Hub (`/multiplayer`)
-- Room creation, joining, and state synchronization
-- Playlist management
-- Match start/end coordination
-
-### Metadata Hub (`/metadata`)
-- `BeginWatchingUserPresence` - Subscribe to online users
-- `EndWatchingUserPresence` - Unsubscribe
-- `UpdateActivity` - Update user activity
-- `UpdateStatus` - Update online status
-- `UserPresenceUpdated` - Broadcasts presence changes
-
-## Project Structure
+## Layout
 
 ```
-py_lazer_server/
-├── app/
-│   ├── api/
-│   │   ├── v2/           # REST API endpoints
-│   │   │   ├── oauth.py
-│   │   │   ├── me.py
-│   │   │   ├── users.py
-│   │   │   ├── beatmaps.py
-│   │   │   ├── scores.py
-│   │   │   ├── rooms.py
-│   │   │   ├── friends.py
-│   │   │   ├── blocks.py
-│   │   │   ├── chat.py
-│   │   │   └── notifications.py
-│   │   ├── signalr.py    # SignalR hub implementations
-│   │   └── deps.py       # Dependency injection
-│   ├── core/             # Configuration and utilities
-│   │   ├── config.py
-│   │   ├── database.py
-│   │   └── security.py
-│   ├── models/           # SQLAlchemy models
-│   │   ├── user.py       # User, UserStatistics, UserRelation
-│   │   ├── beatmap.py
-│   │   ├── score.py
-│   │   └── multiplayer.py
-│   └── main.py           # Application entry point
-├── tests/
-├── pyproject.toml
-└── README.md
+app/api/v2/        REST endpoints compatible with the client
+app/api/hubs/      SignalR hubs (spectator, metadata; multiplayer when not external)
+app/api/internal/  internal API used by the Go service (rooms, matchmaking, scores)
+app/models/        SQLAlchemy models        alembic/   migrations
+app/services/      beatmaps, scores, ranks, leaderboard, chat, hub state
+app/seeders/       matchmaking pool seeder  (sets listed in matchmaking_sets.txt)
+multiplayer/       Go realtime service      docs/      local testing guide
 ```
-
-## Database Models
-
-- **User** - User accounts with profile information
-- **UserStatistics** - Per-mode statistics (pp, rank, play count, etc.)
-- **UserRelation** - Friends and blocks relationships
-- **Beatmap** / **BeatmapSet** - Beatmap metadata
-- **Score** / **ScoreToken** - Score submissions
-- **MultiplayerRoom** / **MultiplayerPlaylistItem** - Multiplayer state
-
-## Implementation Analysis
-
-Detailed implementation analysis is available in the `not-implement/` directory:
-- `implementation-status.md` - Comprehensive analysis of implemented vs. missing endpoints
-- Comparison against official osu! OpenAPI specification
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Acknowledgments
-
-This implementation is based on the official osu! server infrastructure:
-- [osu-web](https://github.com/ppy/osu-web) - REST API reference
-- [osu-server-spectator](https://github.com/ppy/osu-server-spectator) - Real-time hub reference
-- [osu](https://github.com/ppy/osu) - Client implementation reference

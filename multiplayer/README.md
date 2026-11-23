@@ -52,7 +52,18 @@ snapshots (`internal/room/countdown.go`).
 Wire types are in `internal/protocol/rankedplay.go` and are tested against bytes the client itself produces
 (`testdata/rankedplay_vectors.tsv`).
 
-`Manager.CreateRankedPlay` creates such a room; clients cannot (`CreateRoom` still only accepts head-to-head).
+`Manager.CreateRankedPlay` creates such a room; clients cannot (`CreateRoom` accepts head-to-head and team versus).
+
+## Team versus and start timers
+
+Team versus rooms (`internal/room/teamversus.go`) have a red and a blue team: a joining player gets the smaller
+team, `ChangeTeamRequest` (sent with `SendMatchRequest`) moves a player, and switching the room's match type
+creates or removes the teams. Team scoring in the results is not implemented.
+
+The match start timer (`internal/room/matchstart.go`): the host or a referee starts one with
+`StartMatchCountdownRequest` ("Start in...") and stops it with `StopCountdownRequest`; a room with an auto start
+duration starts one itself while someone is ready and stops it when nobody is. When it elapses the ready players
+are sent to load gameplay.
 
 ## Matchmaking, duels and ratings
 

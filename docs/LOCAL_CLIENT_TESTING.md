@@ -21,10 +21,18 @@ The client only talks HTTPS, so everything runs behind a development certificate
 .\scripts\dev.ps1 up
 ```
 
-Starts Postgres (host port 3333) and Redis (9090) from `docker-compose.dev.yml`, migrates, seeds the
-matchmaking pools on first run (`1v1 Nomod`, `1v1 RX`, `1v1 AP`, 85 cards each from the ranked sets in
-`app/seeders/matchmaking_sets.txt`), then opens two windows: the API on `https://localhost:8000` and the Go
-multiplayer service on `https://localhost:8081`. `.\scripts\dev.ps1 down` stops the containers (data is kept).
+Or run the whole stack in containers (what the README describes):
+
+```
+docker compose up -d --build
+docker compose run --rm seed      # once: matchmaking pools (ranked beatmaps only, from the sets in app/seeders/matchmaking_sets.txt)
+```
+
+The script starts Postgres (host port 3333) and Redis (9090), migrates, seeds the matchmaking pools on first run
+(`1v1 Nomod`, `1v1 RX`, `1v1 AP`; only ranked/approved osu beatmaps with a star rating are used as cards), then
+opens two windows: the API on `https://localhost:8000` and the Go multiplayer service on
+`https://localhost:8081`. Note: the script still names `docker-compose.dev.yml`, which is not in the repository;
+use the `docker compose` commands above until the script is updated.
 
 ## Client settings
 
