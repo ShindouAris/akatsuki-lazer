@@ -23,6 +23,7 @@ dependencies = [
     "aiofiles>=24.1.0",
     "python-socketio>=5.11.0",
     "colorama>=0.4.6",
+    "openskill>=6.2.0",
 ]
 
 [project.optional-dependencies]

@@ -7,3 +7,13 @@ documentation/
 .logs
 .pytest_cache/
 .idea/
+osu-web/
+ignore/
+hubs/FULLSTACK OSU/
+data/
+dev-certs/
+multiplayer/
+cert/
+*.db
+*.pem
+.env

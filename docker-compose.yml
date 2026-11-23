@@ -1,29 +1,96 @@
+# Whole stack in containers (HTTPS with the development CA from dev-certs/, see docs/LOCAL_CLIENT_TESTING.md):
+#   docker compose up -d --build
+#   docker compose run --rm seed        # once: matchmaking pools and their beatmaps
+# Postgres and Redis are also published on 127.0.0.1:3333 / :9090 for tools on the host.
 services:
-  
   app:
     build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:youshallnotpass@postgres:5432/osu
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUTF8: "1"
+      PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+    entrypoint: []
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+        --ssl-keyfile /certs/localhost-key.pem --ssl-certfile /certs/localhost.pem
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:youshallnotpass@postgres:5432/osu
-      - REDIS_URL=redis://redis:6379/0
-    env_file:
-      - .env
+    volumes:
+      - ./dev-certs:/certs:ro
+      - ./cert:/app/cert:ro
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u;u.urlopen(\"https://localhost:8000/\",context=ssl._create_unverified_context())"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
-  
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  multiplayer:
+    build: ./multiplayer
+    environment:
+      LISTEN_ADDR: ":8081"
+      TLS_CERT_FILE: /certs/localhost.pem
+      TLS_KEY_FILE: /certs/localhost-key.pem
+      PYTHON_API_URL: https://app:8000
+      API_CA_FILE: /certs/ca.pem
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      JWT_PUBLIC_KEY_FILE: /cert/public.pem
+      JWT_AUDIENCE: ${OAUTH_CLIENT_ID:-5}
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./dev-certs:/certs:ro
+      - ./cert:/cert:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  seed:
+    build: .
+    profiles: [tools]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:youshallnotpass@postgres:5432/osu
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUTF8: "1"
+      PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+    entrypoint: []
+    command: ["python", "-m", "app.seeders", "matchmaking"]
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      app:
+        condition: service_healthy
+
   redis:
     image: redis:latest
-  
+    ports:
+      - "127.0.0.1:9090:6379"
+
   postgres:
     image: postgres:latest
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: youshallnotpass
       POSTGRES_DB: osu
+    ports:
+      - "127.0.0.1:3333:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/osu/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d osu"]
       interval: 5s
@@ -32,4 +99,4 @@ services:
       start_period: 10s
 
 volumes:
-  postgres_data:
+  pgdata:

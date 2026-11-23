@@ -73,3 +73,6 @@ Thumbs.db
 uv.lock
 documentation
 ignore/
+FULLSTACK OSU/
+# local development certificates (contain private keys)
+dev-certs/
