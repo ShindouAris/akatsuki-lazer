@@ -5,8 +5,16 @@ from fastapi import Form
 from fastapi import Query
 from fastapi import status
 from fastapi.responses import JSONResponse
+import logging
+from datetime import UTC
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
+
+from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from sqlalchemy import and_
@@ -17,12 +25,16 @@ from app.api.v2.live_ranks import with_live_ranks
 from app.api.v2.live_ranks import with_live_ranks_many
 from app.api.v2.live_ranks import with_medals
 from app.api.v2.schemas import RankHistoryResponse, UserLookupResponse
+from app.api.v2.schemas import HistoryCount
+from app.api.v2.schemas import RankHighest
 from app.api.v2.schemas import UserCompact
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
 from app.core.error import OsuError
 from app.models.user import GameMode
 from app.models.user import User
+from app.models.score import Score
+from app.models.user import UserRankHistory
 from app.models.user import UserRelation
 from app.services.user_service import create_user
 from app.services.user_service import get_user_by_email
@@ -232,6 +244,79 @@ def _user_to_response(
     )
 
 
+logger = logging.getLogger(__name__)
+
+_RECENT_WINDOW =timedelta(hours=24)
+
+
+async def with_profile_extras(
+    response: UserResponse,
+    user: User,
+    mode: GameMode,
+    db: AsyncSession,
+    variant: Variant = Variant.VANILLA,
+) -> UserResponse:
+    """Add what the profile page needs beyond the statistics: tab counts, play history, best rank, per-mode stats."""
+    try:
+        board_filter = Score.variant == int(variant)
+        mode_filter = and_(Score.user_id == user.id, Score.ruleset_id == int(mode))
+
+        best = await db.scalar(
+            select(func.count()).select_from(Score).where(
+                mode_filter, board_filter, Score.passed.is_(True), Score.ranked.is_(True),
+            ),
+        )
+        from app.api.v2.scores import first_place_condition
+
+        firsts = await db.scalar(
+            select(func.count()).select_from(Score).where(mode_filter, board_filter, first_place_condition()),
+        )
+        recent = await db.scalar(
+            select(func.count()).select_from(Score).where(
+                mode_filter, Score.ended_at >= datetime.now(UTC) - _RECENT_WINDOW,
+            ),
+        )
+        maps = await db.scalar(
+            select(func.count(func.distinct(Score.beatmap_id))).where(mode_filter),
+        )
+
+        monthly: dict[date, int] = {}
+        for (ended_at,) in await db.execute(select(Score.ended_at).where(mode_filter, Score.ended_at.is_not(None))):
+            month = date(ended_at.year, ended_at.month, 1)
+            monthly[month] = monthly.get(month, 0) + 1
+
+        highest = None
+        if variant == Variant.VANILLA:
+            row = (
+                await db.execute(
+                    select(UserRankHistory.rank, UserRankHistory.day)
+                    .where(UserRankHistory.user_id == user.id, UserRankHistory.mode == int(mode))
+                    .order_by(UserRankHistory.rank, UserRankHistory.day.desc())
+                    .limit(1),
+                )
+            ).first()
+            if row is not None:
+                highest = RankHighest(rank=row[0], updated_at=datetime(row[1].year, row[1].month, row[1].day, tzinfo=UTC))
+
+        rulesets = {
+            _mode_to_string(m): _get_user_statistics(user, m, variant if supports_variant(m, variant) else Variant.VANILLA)
+            for m in GameMode
+        }
+    except Exception:
+        logger.warning("Could not build profile extras of user %s", user.id, exc_info=True)
+        return response
+
+    return response.model_copy(update={
+        "scores_best_count": best or 0,
+        "scores_first_count": firsts or 0,
+        "scores_recent_count": recent or 0,
+        "beatmap_playcounts_count": maps or 0,
+        "monthly_playcounts": [HistoryCount(start_date=m, count=c) for m, c in sorted(monthly.items())],
+        "rank_highest": highest,
+        "statistics_rulesets": rulesets,
+    })
+
+
 def _normalize_user_lookup_ids(values: list[str]) -> tuple[list[int], list[str], list[tuple[str, int | str]]]:
     """Split user lookup values into numeric IDs and usernames."""
     numeric_ids: list[int] = []
@@ -381,7 +466,12 @@ async def get_user(
             message="User not found",
         )
 
-    return await with_live_ranks(_user_to_response(user), user, user.playmode, db)
+    board = await get_active_board().get(user.id)
+    if not supports_variant(user.playmode, board):
+        board = Variant.VANILLA
+    response = await with_live_ranks(_user_to_response(user, None, board), user, user.playmode, db, board)
+    response = await with_medals(response, db)
+    return await with_profile_extras(response, user, user.playmode, db, board)
 
 
 @router.get("/users/{user_id}/{mode}", response_model=UserResponse)
@@ -421,7 +511,8 @@ async def get_user_mode(
     if not supports_variant(mode_enum, board):
         board = Variant.VANILLA
     response = await with_live_ranks(_user_to_response(user, mode_enum, board), user, mode_enum, db, board)
-    return await with_medals(response, db)
+    response = await with_medals(response, db)
+    return await with_profile_extras(response, user, mode_enum, db, board)
 
 
 @router.post("/users/{user_id}/block")

@@ -1,5 +1,6 @@
 """Pydantic schemas for API responses."""
 
+from datetime import date
 from datetime import datetime
 from typing import Any
 
@@ -67,8 +68,40 @@ class UserAchievementResponse(BaseModel):
     achievement_id: int
 
 
+class HistoryCount(BaseModel):
+    """One point of a profile history chart (``start_date`` is the first day of the month)."""
+
+    start_date: date
+    count: int = 0
+
+
+class RankHighest(BaseModel):
+    rank: int
+    updated_at: datetime
+
+
+class Kudosu(BaseModel):
+    total: int = 0
+    available: int = 0
+
+
 class UserResponse(UserCompact):
     """Full user profile response."""
+
+    kudosu: Kudosu = Field(default_factory=Kudosu)
+
+    # The client only builds the profile sections listed here (and in this order).
+    profile_order: list[str] = Field(
+        default_factory=lambda: ["me", "recent_activity", "top_ranks", "medals", "historical", "beatmaps", "kudosu"],
+    )
+    scores_best_count: int = 0
+    scores_first_count: int = 0
+    scores_recent_count: int = 0
+    beatmap_playcounts_count: int = 0
+    monthly_playcounts: list[HistoryCount] = Field(default_factory=list)
+    replays_watched_counts: list[HistoryCount] = Field(default_factory=list)
+    rank_highest: RankHighest | None = None
+    statistics_rulesets: dict[str, UserStatisticsResponse] | None = None
 
     cover_url: str | None = None
     title: str | None = None
@@ -221,6 +254,7 @@ class ScoreResponse(BaseModel):
     rank_country: int | None = None  # Position on country leaderboard
     user: UserCompact | None = None
     beatmap: BeatmapCompact | None = None
+    beatmapset: BeatmapsetCompact | None = None  # lists of scores show the title from here
 
 
 class ScoreSubmissionRequest(BaseModel):

@@ -19,8 +19,7 @@ from app.models.user import User
 router = APIRouter()
 
 
-@router.get("/users/{user_id}/scores/{type}", response_model=list[SoloScoreResponse])
-async def get_user_scores_by_type(
+async def _unused_get_user_scores_by_type(  # superseded by the board-aware route in scores.py
     db: DbSession,
     user_id: int,
     type: str,

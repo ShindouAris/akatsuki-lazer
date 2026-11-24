@@ -3,13 +3,18 @@
 from fastapi import APIRouter
 from fastapi import Query
 from fastapi import status
+from fastapi.responses import JSONResponse
 from sqlalchemy import and_
 from sqlalchemy import desc
 from sqlalchemy import func
 from sqlalchemy import select
 
 from app.api.deps import DbSession
+from app.api.v2.beatmaps import _beatmap_to_compact
+from app.api.v2.beatmaps import _beatmapset_to_compact
 from app.api.v2.schemas import BeatmapsetResponse
+from app.api.v2.schemas import UserMostPlayedResponse
+from app.models.score import Score
 from app.core.error import OsuError
 from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
@@ -50,6 +55,37 @@ async def get_user_beatmaps(
 
     # Map type to status or query
     type_lower = type.lower()
+
+    if type_lower in {"nominated", "guest"}:  # asked by the profile page; this server has neither
+        return []
+
+    if type_lower == "most_played":
+        rows = (
+            await db.execute(
+                select(Score.beatmap_id, func.count(Score.id).label("play_count"))
+                .where(Score.user_id == user_id)
+                .group_by(Score.beatmap_id)
+                .order_by(desc("play_count"))
+                .limit(limit)
+                .offset(offset),
+            )
+        ).all()
+        items = []
+        for beatmap_id, play_count in rows:
+            beatmap = await db.get(Beatmap, beatmap_id)
+            beatmapset = await db.get(BeatmapSet, beatmap.beatmapset_id) if beatmap else None
+            if beatmap is None or beatmapset is None:
+                continue
+            items.append(
+                UserMostPlayedResponse(
+                    beatmap_id=beatmap_id,
+                    beatmapset_id=beatmap.beatmapset_id,
+                    count=play_count,
+                    beatmap=_beatmap_to_compact(beatmap),
+                    beatmapset=_beatmapset_to_compact(beatmapset),
+                ).model_dump(mode="json"),
+            )
+        return JSONResponse(items)
 
     if type_lower == "favourite":
         # Get favourite beatmapsets

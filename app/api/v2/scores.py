@@ -13,6 +13,7 @@ from fastapi import Response
 from sqlalchemy import and_
 from sqlalchemy import func
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import ActiveUser
@@ -26,6 +27,7 @@ from app.api.v2.schemas import ScoreSubmissionRequest
 from app.api.v2.schemas import UserCompact
 from app.core.config import get_settings
 from app.core.error import OsuError
+from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapStatus
 from app.models.multiplayer import MultiplayerPlaylistItem
 from app.models.multiplayer import MultiplayerScore
@@ -140,6 +142,23 @@ async def _create_multiplayer_room_score_event(
     )
 
 
+def first_place_condition():
+    """Passed, ranked scores that are the best on their beatmap and board (ties count as first)."""
+    other = aliased(Score)
+    best = (
+        select(func.max(other.total_score))
+        .where(
+            other.beatmap_id == Score.beatmap_id,
+            other.variant == Score.variant,
+            other.passed.is_(True),
+            other.ranked.is_(True),
+        )
+        .correlate(Score)
+        .scalar_subquery()
+    )
+    return and_(Score.passed.is_(True), Score.ranked.is_(True), Score.total_score >= best)
+
+
 def _score_to_response(
     score: Score,
     include_user: bool = True,
@@ -166,23 +185,15 @@ def _score_to_response(
         )
 
     beatmap_compact = None
+    beatmapset_compact = None
     if include_beatmap and score.beatmap:
-        beatmap_compact = BeatmapCompact(
-            id=score.beatmap.id,
-            beatmapset_id=score.beatmap.beatmapset_id,
-            version=score.beatmap.version,
-            mode=_mode_to_string(score.beatmap.mode),
-            status=score.beatmap.status.name.lower(),
-            difficulty_rating=score.beatmap.difficulty_rating,
-            total_length=score.beatmap.total_length,
-            cs=score.beatmap.cs,
-            ar=score.beatmap.ar,
-            od=score.beatmap.od,
-            hp=score.beatmap.hp,
-            bpm=score.beatmap.bpm,
-            max_combo=score.beatmap.max_combo,
-            checksum=score.beatmap.checksum,
-        )
+        from app.api.v2.beatmaps import _beatmap_to_compact
+
+        from app.api.v2.beatmaps import _beatmapset_to_compact
+
+        beatmap_compact = _beatmap_to_compact(score.beatmap)
+        beatmapset = score.beatmap.__dict__.get("beatmapset")  # only when the query loaded it
+        beatmapset_compact = _beatmapset_to_compact(beatmapset) if beatmapset is not None else None
 
     return ScoreResponse(
         id=score.id,
@@ -205,6 +216,7 @@ def _score_to_response(
         position=rank_global,
         user=user_compact,
         beatmap=beatmap_compact,
+        beatmapset=beatmapset_compact,
     )
 
 
@@ -449,6 +461,14 @@ async def submit_score(
             result_pp = pp_result.get("pp")
             if isinstance(result_pp, float):
                 calculated_pp = result_pp
+            # The star rating with the play's mods, for the skill medals (see app.services.medals).
+            result_stars = pp_result.get("stars")
+            if isinstance(result_stars, float) and result_stars > 0:
+                data["star_rating"] = result_stars
+            # The star rating with the play's mods, for the skill medals (see app.services.medals).
+            result_stars = pp_result.get("stars")
+            if isinstance(result_stars, float) and result_stars > 0:
+                data["star_rating"] = result_stars
         except Exception as exc:
             logger.warning("Server-side PP calculation failed for score token %s: %s", token_id, exc)
 
@@ -636,16 +656,23 @@ async def get_user_scores(
             message="User not found",
         )
 
+    if type == "pinned":  # score pins are not implemented
+        return []
+
     # Build query based on type
     query = (
         select(Score)
-        .options(selectinload(Score.beatmap))
+        .options(selectinload(Score.beatmap).selectinload(Beatmap.beatmapset))
         .where(Score.user_id == user_id)
     )
+    mode_enum = {"osu": 0, "taiko": 1, "fruits": 2, "mania": 3}.get(mode or "")
+    if mode_enum is not None:
+        query = query.where(Score.ruleset_id == mode_enum)
     if variant is not None and variant != "":
         query = query.where(Score.variant == int(board_for_request(variant, None)))
     elif type in {"best", "firsts"}:
-        query = query.where(Score.variant == 0)
+        board = await get_active_board().get(user_id)  # the same board the profile header shows
+        query = query.where(Score.variant == int(board))
 
     if type == "best":
         query = query.where(
@@ -654,8 +681,7 @@ async def get_user_scores(
     elif type == "recent":
         query = query.order_by(Score.ended_at.desc())
     elif type == "firsts":
-        # TODO: Implement first place scores
-        query = query.where(Score.passed.is_(True)).order_by(Score.ended_at.desc())
+        query = query.where(first_place_condition()).order_by(Score.ended_at.desc())
     else:
         raise OsuError(
             code=status.HTTP_400_BAD_REQUEST,

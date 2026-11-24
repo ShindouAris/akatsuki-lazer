@@ -6,9 +6,9 @@ router = APIRouter()
 
 
 @router.get("/tags")
-async def get_tags() -> list:
-    """Get available beatmap tags.
+async def get_tags() -> dict:
+    """Get available beatmap tags (the client expects ``{"tags": [...]}``).
 
-    Returns an empty list for now - tags feature not yet implemented.
+    Empty for now - the tags feature is not implemented.
     """
-    return []
+    return {"tags": []}
