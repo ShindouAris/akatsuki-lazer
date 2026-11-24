@@ -87,18 +87,21 @@ async def make_score(
     statistics: dict[str, int] | None = None,
     seconds: int = 100,
     variant: int = 0,
+    ruleset: int = 0,
+    star_rating: float | None = None,
 ) -> Score:
     ended = datetime.now(UTC)
     score = Score(
         user_id=user.id,
         beatmap_id=beatmap.id,
-        ruleset_id=0,
+        ruleset_id=ruleset,
         variant=variant,
         data=json.dumps(
             {
                 "mods": mods or [],
                 "statistics": statistics or {"great": 100, "ok": 5, "miss": 0},
                 "maximum_statistics": {"great": 105},
+                **({"star_rating": star_rating} if star_rating is not None else {}),
             },
         ),
         total_score=total_score,

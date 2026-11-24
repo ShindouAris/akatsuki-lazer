@@ -31,6 +31,7 @@ from app.models.legacy import ScoreProcessHistory
 from app.models.score import Score
 from app.models.user import GameMode
 from app.services.leaderboard import Leaderboard
+from app.services.medals import notify_medals
 from app.services.score_stats import ProcessedScore
 from app.services.variant import Variant
 from app.services.variant import supports_variant
@@ -185,6 +186,12 @@ class ScoreStatisticsWorker:
 
         if result is not None:
             await self._apply_leaderboard(result)
+
+        if result is not None and result.medals:
+            try:
+                await notify_medals(result.user_id, result.medals)
+            except Exception:
+                logger.exception("Medal notification failed for score %s", score_id)
 
         if result is not None and self.on_processed is not None:
             try:

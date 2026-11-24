@@ -265,12 +265,17 @@ class ChatConnections:
     def listening(self, user_id: int) -> int:
         return sum(1 for c in self._by_user.get(user_id, []) if c.chat)
 
-    async def send(self, user_ids: list[int], event: str, data: dict[str, Any]) -> None:
-        """Deliver an event to every chat-listening connection of the users. Failures drop the connection."""
+    async def send(
+        self, user_ids: list[int], event: str, data: dict[str, Any], *, chat_only: bool = True,
+    ) -> None:
+        """Deliver an event to the users' connections (only chat-listening ones unless ``chat_only`` is off).
+
+        Failures drop the connection.
+        """
         text = json.dumps({"event": event, "data": data})
         for user_id in user_ids:
             for connection in list(self._by_user.get(user_id, [])):
-                if not connection.chat:
+                if chat_only and not connection.chat:
                     continue
                 try:
                     async with connection.lock:
