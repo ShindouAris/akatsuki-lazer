@@ -10,6 +10,7 @@ from app.api.v2 import me
 from app.api.v2 import notifications
 from app.api.v2 import oauth
 from app.api.v2 import pp
+from app.api.v2 import profile_assets
 from app.api.v2 import rankings
 from app.api.v2 import rooms
 from app.api.v2 import scores
@@ -23,12 +24,13 @@ router = APIRouter(prefix="/api/v2")
 
 router.include_router(oauth.router, tags=["OAuth"])
 router.include_router(me.router, tags=["Me"])
+router.include_router(profile_assets.router, tags=["Me"])
+router.include_router(user_activity.router, tags=["User Activity"])  # before users: /users/{id}/{mode} would eat it
 router.include_router(users.router, tags=["Users"])
 router.include_router(rankings.router, tags=["Rankings"])
 router.include_router(pp.router, tags=["PP"])
 router.include_router(user_beatmaps.router, tags=["User Beatmaps"])
 router.include_router(user_scores.router, tags=["User Scores"])
-router.include_router(user_activity.router, tags=["User Activity"])
 router.include_router(beatmaps.router, tags=["Beatmaps"])
 router.include_router(scores.router, tags=["Scores"])
 router.include_router(rooms.router, tags=["Multiplayer"])

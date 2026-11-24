@@ -34,10 +34,26 @@ count, grades, ...), Redis pp ranking and rankings page. Endpoints take `?varian
 (`/beatmaps/{id}/scores` also infers it from `mods=RX`); without it you get the vanilla board. A play above its
 board's pp cap (`PP_CAP_VANILLA/RELAX/AUTOPILOT`, 0 = no cap) is kept but awards no pp.
 
-**Medals:** awarded by the score worker while it processes a play (port of the medal awarders of
-osu-queue-score-statistics): combo, play count, total hits, rank milestones and star rating pass/full combo
-medals, listed in the profile as `user_achievements`. Only vanilla plays earn medals
-(`app/services/medals.py` has the catalogue).
+**Medals:** the set and rules of score-service-rs (ids from osu-web where the medal exists), awarded by the score worker
+while it processes a play and listed in the profile as `user_achievements`: skill (pass / full combo, 1-8 stars per
+ruleset, 9-10 in osu!, using the star rating *with the play's mods*, NoFail passes excluded), combo and play count
+(osu! only), hits (taiko / catch / mania), rank milestones per ruleset, mod introductions and the hush-hush medals
+Akatsuki implements. Plays on every board earn them and a medal is owned once. A new medal is pushed over the
+notifications WebSocket (`user_achievement_unlock`) so the client shows its unlock overlay. `app/services/medals.py` has the
+catalogue (84 medals; ids from 1000 up are made up for this server).
+
+**Your own flag, avatar and cover:** the client has no screen for this, so use the API with your access token
+(`POST /oauth/token`; `-k` skips the dev certificate check):
+
+```bash
+curl -k -X PUT    -H "Authorization: Bearer $TOKEN" -F "file=@avatar.png"  https://localhost:8000/api/v2/me/avatar   # PNG/JPEG/GIF/WebP, 2 MB
+curl -k -X PUT    -H "Authorization: Bearer $TOKEN" -F "file=@cover.jpg"   https://localhost:8000/api/v2/me/cover    # 6 MB
+curl -k -X PUT    -H "Authorization: Bearer $TOKEN" -F "country_code=JP"   https://localhost:8000/api/v2/me/country  # any 2 letters
+curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://localhost:8000/api/v2/me/avatar                         # same for /cover
+```
+
+Images are stored in the object storage and served publicly at `/avatars/{id}` and `/covers/{id}`. Reopen the
+profile in the client to see the change (it caches pictures by URL; every upload gets a new one).
 
 **Spectating:** the `/spectator` hub including the V2 targets (`BeginPlaySessionV2`, `SendFrameDataV2`,
 `EndPlaySessionV2`) the current client uses, with frame buffering in Redis for late watchers.

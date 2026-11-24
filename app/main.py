@@ -22,6 +22,7 @@ from app.api.hubs.spectator import router as spectator_router
 from app.api.hubs.spectator import send_user_score_processed
 from app.api.v2 import router as api_v2_router
 from app.api.v2.oauth import router as oauth_router
+from app.api.v2.profile_assets import assets_router
 from app.api.v2.users import root_registration_router
 from app.core.config import get_settings
 from app.core.database import async_session_maker
@@ -106,6 +107,7 @@ app.include_router(api_v2_router)
 
 # Include root registration endpoint for osu! compatibility (/users)
 app.include_router(root_registration_router, tags=["Users"])
+app.include_router(assets_router, tags=["Assets"])
 
 # Also include OAuth at root level (osu! client expects /oauth/token, not /api/v2/oauth/token)
 app.include_router(oauth_router, tags=["OAuth"])
