@@ -304,6 +304,26 @@ async def test_replay_buffer_stores_the_bundles_the_hub_now_produces() -> None:
     assert len(stored) == 1 and stored[0].header.total_score == 1296 and stored[0].frames[0].time == 120.5
 
 
+@pytest.mark.asyncio
+async def test_replay_buffer_reads_bundles_written_by_the_external_spectator_service() -> None:
+    """The Go service stores base64 of the msgpack bundle (receive time left empty)."""
+    import base64
+
+    import msgpack
+
+    from app.services.hub_state import HubStateService
+
+    service = HubStateService()
+    redis = _ListRedis()
+    service._redis = redis  # noqa: SLF001
+    header = [1296, 1.0, 3, 3, {0: 5}, None, None, []]  # statistics maps have integer keys
+    redis.lists["hub:replay:frames:15"] = [base64.b64encode(msgpack.packb([header, []])).decode()]
+
+    stored = await service.get_replay_frame_bundles(15)
+
+    assert len(stored) == 1 and stored[0].header.total_score == 1296
+
+
 def test_reconnect_restores_watch_and_sends_playing_snapshot(
     spectator_test_client: tuple[TestClient, FakeHubStateService],
 ) -> None:

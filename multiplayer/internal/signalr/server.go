@@ -58,6 +58,11 @@ func (s *Session) Invoke(target string, args ...any) {
 	s.enqueue(data)
 }
 
+// SendEncoded queues a message that was already built with EncodeInvocation, so one encoding can be shared by
+// many sessions (a spectator frame goes to every watcher). The bytes are never modified; do not change them
+// afterwards. Like Invoke it never blocks.
+func (s *Session) SendEncoded(data []byte) { s.enqueue(data) }
+
 func (s *Session) enqueue(data []byte) {
 	select {
 	case s.out <- data:

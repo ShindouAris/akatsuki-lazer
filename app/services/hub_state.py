@@ -13,11 +13,13 @@ State stored:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
+import msgpack
 import redis.asyncio as redis
 
 from app.core.config import get_settings
@@ -330,9 +332,14 @@ class HubStateService:
 
         for value in values:
             try:
-                payload = json.loads(value)
+                text = value.decode() if isinstance(value, bytes) else value
+                if text.startswith("["):
+                    payload = json.loads(text)  # written by the in-process spectator hub
+                else:
+                    # written by the external spectator service: base64 of the msgpack bundle
+                    payload = msgpack.unpackb(base64.b64decode(text), raw=False, strict_map_key=False)
                 bundles.append(FrameDataBundle.from_msgpack(payload))
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            except (json.JSONDecodeError, ValueError, TypeError, msgpack.exceptions.UnpackException) as exc:
                 logger.warning(
                     "Failed to decode replay frame bundle for token %s: %s",
                     score_token,

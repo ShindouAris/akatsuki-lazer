@@ -30,6 +30,7 @@ from app.api.hubs.base import send_completion
 from app.api.hubs.base import send_invocation
 from app.api.hubs.base import send_void_completion
 from app.core.database import async_session_maker
+from app.core.config import get_settings
 from app.core.security import decode_token
 from app.models.multiplayer import MultiplayerPlaylistItem
 from app.models.multiplayer import MultiplayerRoom
@@ -48,6 +49,8 @@ from app.services.hub_state import get_hub_state_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+# Served in both modes: it only triggers a broadcast (here or on the external metadata service).
+admin_router = APIRouter()
 
 
 @dataclass
@@ -303,6 +306,20 @@ async def _send_daily_challenge_update(conn: MetadataConnection) -> None:
 
 async def send_multiplayer_room_score_set(event: MultiplayerRoomScoreSetEvent) -> int:
     """Broadcast a multiplayer room score set event to room metadata watchers."""
+    if get_settings().use_external_metadata:
+        from app.services.metadata_client import notify_room_score_set
+
+        return await notify_room_score_set(
+            {
+                "room_id": event.room_id,
+                "playlist_item_id": event.playlist_item_id,
+                "score_id": event.score_id,
+                "user_id": event.user_id,
+                "total_score": event.total_score,
+                "new_rank": event.new_rank,
+            },
+        )
+
     watcher_conn_ids = room_watching_connections.get(event.room_id, set())
     if not watcher_conn_ids:
         return 0
@@ -402,6 +419,11 @@ async def broadcast_beatmap_updates(beatmap_set_ids: list[int], queue_id: int | 
     if queue_id is None:
         queue_id = await hub_state.append_beatmap_updates(beatmap_set_ids)
 
+    if get_settings().use_external_metadata:
+        from app.services.metadata_client import notify_beatmap_updates
+
+        return await notify_beatmap_updates(beatmap_set_ids, queue_id)
+
     updates = BeatmapUpdates(
         beatmap_set_ids=beatmap_set_ids,
         last_processed_queue_id=queue_id,
@@ -424,7 +446,7 @@ async def broadcast_beatmap_updates(beatmap_set_ids: list[int], queue_id: int | 
     return notified
 
 
-@router.post("/metadata/trigger-refresh")
+@admin_router.post("/metadata/trigger-refresh")
 async def trigger_metadata_refresh(beatmap_set_ids: list[int]) -> dict:
     """Trigger metadata refresh for specified beatmapsets on all connected clients.
 

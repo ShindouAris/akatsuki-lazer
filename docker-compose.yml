@@ -12,6 +12,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHONUTF8: "1"
       PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+      USE_EXTERNAL_SPECTATOR: "true"
+      SPECTATOR_INTERNAL_URL: http://spectator:8083
+      USE_EXTERNAL_METADATA: "true"
+      METADATA_INTERNAL_URL: http://metadata:8085
       # Replays and beatmap files: the S3_* settings from .env first (when set), then this SeaweedFS.
       SEAWEEDFS_ENDPOINT_URL: http://seaweedfs:8333
       SEAWEEDFS_BUCKET: akatsuki
@@ -83,6 +87,64 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Spectator hub (live gameplay streaming), built from the same image as multiplayer.
+  # Client setting "Spectator socket server URL": https://localhost:8082
+  spectator:
+    build: ./multiplayer
+    image: akatsuki-lazer-multiplayer
+    entrypoint: ["/spectator"]
+    environment:
+      LISTEN_ADDR: ":8082"
+      INTERNAL_LISTEN_ADDR: ":8083"
+      TLS_CERT_FILE: /certs/localhost.pem
+      TLS_KEY_FILE: /certs/localhost-key.pem
+      PYTHON_API_URL: https://app:8000
+      API_CA_FILE: /certs/ca.pem
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      JWT_PUBLIC_KEY_FILE: /cert/public.pem
+      JWT_AUDIENCE: ${OAUTH_CLIENT_ID:-5}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./dev-certs:/certs:ro
+      - ./cert:/cert:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # Metadata hub (presence, daily challenge, beatmap updates), same image as multiplayer.
+  # Client setting "Metadata socket server URL": https://localhost:8084
+  metadata:
+    build: ./multiplayer
+    image: akatsuki-lazer-multiplayer
+    entrypoint: ["/metadata"]
+    environment:
+      LISTEN_ADDR: ":8084"
+      INTERNAL_LISTEN_ADDR: ":8085"
+      TLS_CERT_FILE: /certs/localhost.pem
+      TLS_KEY_FILE: /certs/localhost-key.pem
+      PYTHON_API_URL: https://app:8000
+      API_CA_FILE: /certs/ca.pem
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      JWT_PUBLIC_KEY_FILE: /cert/public.pem
+      JWT_AUDIENCE: ${OAUTH_CLIENT_ID:-5}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8084:8084"
+    volumes:
+      - ./dev-certs:/certs:ro
+      - ./cert:/cert:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   seed:

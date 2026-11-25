@@ -13,10 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.hubs.metadata import get_online_count
+from app.api.hubs.metadata import admin_router as metadata_admin_router
 from app.api.hubs.metadata import router as metadata_router
+from app.api.internal.metadata import router as internal_metadata_router
 from app.api.hubs.multiplayer import router as multiplayer_router
 from app.api.internal.matchmaking import router as internal_matchmaking_router
 from app.api.internal.multiplayer import router as internal_multiplayer_router
+from app.api.internal.spectator import notify_score_processed
+from app.api.internal.spectator import router as internal_spectator_router
 from app.api.hubs.spectator import resume_score_processed_dispatcher
 from app.api.hubs.spectator import router as spectator_router
 from app.api.hubs.spectator import send_user_score_processed
@@ -53,12 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     hub_state = await get_hub_state_service()
     app.state.hub_state = hub_state
     logger.info("Redis hub state service initialized")
-    resume_score_processed_dispatcher()
-    logger.info("Spectator score-processed dispatcher resumed")
+    if not settings.use_external_spectator:
+        resume_score_processed_dispatcher()
+        logger.info("Spectator score-processed dispatcher resumed")
 
     # Score statistics worker: updates user stats after submission, then tells the client via the spectator hub.
     score_worker = get_score_worker()
-    score_worker.on_processed = send_user_score_processed
+    score_worker.on_processed = (
+        notify_score_processed if settings.use_external_spectator else send_user_score_processed
+    )
     leaderboard = Leaderboard(hub_state.redis)
     set_leaderboard(leaderboard)  # profiles read live ranks from it
     set_active_board(ActiveBoard(hub_state.redis))  # which board (vanilla / RX / AP) each player is on
@@ -113,8 +120,15 @@ app.include_router(assets_router, tags=["Assets"])
 app.include_router(oauth_router, tags=["OAuth"])
 
 # Include SignalR hub endpoints at root level
-app.include_router(spectator_router, tags=["SignalR"])
-app.include_router(metadata_router, tags=["SignalR"])
+app.include_router(metadata_admin_router, tags=["SignalR"])
+if settings.use_external_metadata:
+    logger.info("Metadata hub is served by the external service; /metadata is not mounted here")
+else:
+    app.include_router(metadata_router, tags=["SignalR"])
+if settings.use_external_spectator:
+    logger.info("Spectator is served by the external service; /spectator is not mounted here")
+else:
+    app.include_router(spectator_router, tags=["SignalR"])
 if settings.use_external_multiplayer:
     logger.info("Realtime multiplayer is served by the external service; /multiplayer is not mounted here")
 else:
@@ -123,6 +137,8 @@ else:
 # Persistence API for the external multiplayer service (disabled unless INTERNAL_API_KEY is set)
 app.include_router(internal_multiplayer_router, tags=["Internal"])
 app.include_router(internal_matchmaking_router, tags=["Internal"])
+app.include_router(internal_spectator_router, tags=["Internal"])
+app.include_router(internal_metadata_router, tags=["Internal"])
 
 @app.exception_handler(OsuError)
 async def custom_handler(request: Request, exc: OsuError) -> JSONResponse:
@@ -148,6 +164,10 @@ async def root() -> dict:
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint."""
+    if settings.use_external_metadata:
+        from app.services.metadata_client import online_users
+
+        return {"status": "healthy", "online_users": await online_users()}
     return {
         "status": "healthy",
         "online_users": get_online_count(),

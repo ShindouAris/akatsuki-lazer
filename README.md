@@ -1,12 +1,14 @@
-# akatsuki-lazer
+﻿# akatsuki-lazer
 
 A server backend for the osu! lazer client, written in Python (FastAPI) with a Go service for realtime multiplayer.
 It is meant to be used with a modified client: <https://github.com/ShindouAris/osu>.
 
 ```
  osu! lazer client
-   |  HTTPS  :8000   REST /api/v2, OAuth, /spectator, /metadata   -> app        (Python, FastAPI)
+   |  HTTPS  :8000   REST /api/v2, OAuth                         -> app        (Python, FastAPI)
    |  HTTPS  :8081   /multiplayer (SignalR + MessagePack)         -> multiplayer (Go)
+   |  HTTPS  :8082   /spectator  (SignalR + MessagePack)         -> spectator   (Go)
+   |  HTTPS  :8084   /metadata   (SignalR + MessagePack)         -> metadata    (Go)
                                                                        |  /internal/*  (X-Internal-Key)
                                                                        v
                                                     app  <->  PostgreSQL + Redis
@@ -102,7 +104,7 @@ docker compose run --rm seed    # once: matchmaking pools and their beatmaps (ne
 ```
 
 - API: `https://localhost:8000/api/v2/` (docs at `/docs`)
-- Spectator and metadata hubs: `https://localhost:8000/spectator`, `/metadata`
+- Spectator hub: `https://localhost:8082/spectator`; metadata hub: `https://localhost:8084/metadata`
 - Multiplayer hub: `https://localhost:8081/multiplayer`
 - PostgreSQL `127.0.0.1:3333`, Redis `127.0.0.1:9090`, SeaweedFS S3 `127.0.0.1:8333` for tools on the host.
 
@@ -128,6 +130,8 @@ Settings come from environment variables or `.env` (see `.env.example` for every
 | `SEAWEEDFS_ENDPOINT_URL`, `SEAWEEDFS_BUCKET`, `SEAWEEDFS_ACCESS_KEY`, `SEAWEEDFS_SECRET_KEY` | the fallback store (SeaweedFS' S3 gateway); `docker compose` sets these for the bundled container |
 | `INTERNAL_API_KEY` | enables `/internal/*`; must equal the Go service's key. Empty disables the internal API |
 | `USE_EXTERNAL_MULTIPLAYER` | `true` when the Go service serves `/multiplayer` so this process does not |
+| `USE_EXTERNAL_METADATA`, `METADATA_INTERNAL_URL` | same for the metadata hub (`http://metadata:8085`) |
+| `USE_EXTERNAL_SPECTATOR`, `SPECTATOR_INTERNAL_URL` | `true` when the Go spectator service serves `/spectator`; the URL is its internal HTTP address (`http://spectator:8083`) |
 
 The Go service's own variables (`LISTEN_ADDR`, `PYTHON_API_URL`, `API_CA_FILE`, `JWT_PUBLIC_KEY_FILE`, ...) are
 documented in [`multiplayer/README.md`](multiplayer/README.md); `docker-compose.yml` sets them for you.
@@ -177,7 +181,8 @@ Run the modified client, then Settings -> Debug -> Server:
 |---|---|
 | Use custom server | on |
 | Server URL | `https://localhost:8000` |
-| Spectator / Metadata socket URL | `https://localhost:8000` (the client appends the path) |
+| Metadata socket URL | `https://localhost:8084` |
+| Spectator socket URL | `https://localhost:8082` |
 | Multiplayer socket URL | `https://localhost:8081` |
 | Client ID / secret | `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` from `.env` |
 

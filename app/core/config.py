@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     # this process then stops serving the /multiplayer SignalR endpoint.
     use_external_multiplayer: bool = False
 
+    # Same for the spectator hub (./multiplayer/cmd/spectator). The URL is the service's plain-HTTP internal
+    # address, used to push "score processed" notifications to it.
+    use_external_spectator: bool = False
+    spectator_internal_url: str = "http://spectator:8083"
+
+    # Same for the metadata hub (./multiplayer/cmd/metadata): presence, daily challenge, beatmap updates.
+    use_external_metadata: bool = False
+    metadata_internal_url: str = "http://metadata:8085"
+
 
 @lru_cache
 def get_settings() -> Settings:
