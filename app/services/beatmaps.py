@@ -76,6 +76,9 @@ def _generate_cover_urls(beatmapset_id: int) -> dict[str, str]:
     }
 
 
+LEADERBOARD_STATUSES = frozenset({"ranked", "approved", "loved"})
+
+
 def _parse_status(status_str: str) -> BeatmapStatus:
     """Convert status string to BeatmapStatus enum."""
     status_map = {
@@ -656,6 +659,7 @@ class BeatmapService:
                         "pending": "pending",
                         "graveyard": "graveyard",
                         "wip": "pending",
+                        "leaderboard": "leaderboard",  # the client's default "Has Leaderboard"; trimmed below
                     }
                     params["s"] = status_map.get(status, "any")
                 if cursor_string:
@@ -761,6 +765,22 @@ class BeatmapService:
 
         Uses cheesegull API on mirror, or official osu! API v2 based on config.
         """
+        result = await self._search_beatmapsets_source(query, mode, status, sort, cursor_string)
+        if status == "leaderboard":
+            # "Has Leaderboard" lists ranked, approved and loved maps; qualified ones have no leaderboard yet.
+            result.beatmapsets = [
+                bs for bs in result.beatmapsets if str(bs.get("status", "")).lower() in LEADERBOARD_STATUSES
+            ]
+        return result
+
+    async def _search_beatmapsets_source(
+        self,
+        query: str | None,
+        mode: int | None,
+        status: str | None,
+        sort: str,
+        cursor_string: str | None,
+    ) -> BeatmapsetSearchResult:
         if not self._settings.use_beatmap_mirror:
             return await self._search_beatmapsets_osu_api(
                 query=query, mode=mode, status=status, cursor_string=cursor_string,

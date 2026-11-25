@@ -24,6 +24,23 @@ class UserCompact(BaseModel):
     is_bot: bool = False
     is_supporter: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _country_from_user_model(cls, data: Any) -> Any:
+        """A User row stores the country as ``country_acronym``; without this a validated row shows as "XX"."""
+        if not isinstance(data, dict) and not hasattr(data, "country_code") and hasattr(data, "country_acronym"):
+            return {
+                "id": data.id,
+                "username": data.username,
+                "avatar_url": getattr(data, "avatar_url", None),
+                "country_code": data.country_acronym or "XX",
+                "is_active": getattr(data, "is_active", True),
+                "is_bot": getattr(data, "is_bot", False),
+                "is_supporter": getattr(data, "is_supporter", False),
+            }
+        return data
+
+
 class UserLookupResponse(BaseModel):
     """Response for user lookup endpoint."""
 

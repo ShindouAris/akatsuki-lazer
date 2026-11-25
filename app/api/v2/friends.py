@@ -71,8 +71,6 @@ async def get_friends(user: CurrentUser, db: DbSession) -> list[Relation]:
             )
         )
 
-    print(friends)
-
     return friends
 
 

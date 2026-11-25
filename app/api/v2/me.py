@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from fastapi import Query
+from sqlalchemy import select
 
 from app.api.deps import CurrentUser
 from app.api.deps import DbSession
@@ -11,6 +12,7 @@ from app.api.v2.schemas import RankHistoryResponse
 from app.api.v2.schemas import UserResponse
 from app.api.v2.schemas import UserStatisticsResponse
 from app.models.user import GameMode
+from app.models.user import UserBeatmapFavorite
 from app.services.active_board import get_active_board
 from app.services.variant import Variant
 from app.services.variant import parse_variant
@@ -110,6 +112,17 @@ async def get_current_user(user: CurrentUser, db: DbSession) -> UserResponse:
         statistics=stats,
     )
     return await with_medals(await with_live_ranks(response, user, mode, db, board), db)
+
+
+@router.get("/me/beatmapset-favourites")  # before /me/{mode}, which would take it
+async def my_favourite_beatmapsets(db: DbSession, user: CurrentUser) -> dict[str, list[int]]:
+    """The ids of the beatmapsets the user favourited; the client uses them to mark the hearts."""
+    result = await db.execute(
+        select(UserBeatmapFavorite.beatmapset_id)
+        .where(UserBeatmapFavorite.user_id == user.id)
+        .order_by(UserBeatmapFavorite.created_at.desc()),
+    )
+    return {"beatmapset_ids": list(result.scalars().all())}
 
 
 @router.get("/me/{mode}", response_model=UserResponse)

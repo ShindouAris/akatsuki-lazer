@@ -400,17 +400,17 @@ async def lookup_user(
     ids_bracket: list[int] = Query(default_factory=list, alias="ids[]"),
     ids: list[int] = Query(default_factory=list),
 ) -> UserLookupResponse:
-    """Lookup a user by ID or username."""
-    resolved_id = id
-    if resolved_id is None:
-        requested_ids = [*ids_bracket, *ids]
-        if requested_ids:
-            resolved_id = requested_ids[0]
+    """Lookup users by ID or username. The client batches ids (``ids[]=2&ids[]=3``): every one is returned."""
+    requested_ids = list(dict.fromkeys([*([id] if id is not None else []), *ids_bracket, *ids]))
 
-    if resolved_id is not None:
-        result = await db.execute(select(User).where(User.id == resolved_id))
+    if requested_ids:
+        result = await db.execute(select(User).where(User.id.in_(requested_ids)))
+        found = {u.id: u for u in result.scalars().all()}
+        # Keep the order of the request; a user that does not exist is simply missing from the answer.
+        users = [found[i] for i in requested_ids if i in found]
     elif username:
         result = await db.execute(select(User).where(User.username == username))
+        users = list(result.scalars().all())
     else:
         raise OsuError(
             code=status.HTTP_400_BAD_REQUEST,
@@ -418,9 +418,7 @@ async def lookup_user(
             message="Must provide id or username",
         )
 
-    user = result.scalar_one_or_none()
-
-    if not user:
+    if not users:
         raise OsuError(
             code=status.HTTP_404_NOT_FOUND,
             error="User not found",
@@ -438,6 +436,7 @@ async def lookup_user(
                 is_bot=user.is_bot,
                 is_supporter=user.is_supporter,
             )
+            for user in users
         ]
     )
 

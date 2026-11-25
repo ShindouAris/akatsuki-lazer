@@ -213,6 +213,84 @@ async def test_lookup_user_with_ids_bracket_trailing_slash(
 
 
 @pytest.mark.asyncio
+async def test_lookup_returns_every_user_of_a_batch_in_request_order(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """The client asks for ids[]=a&ids[]=b at once; answering with only the first shows "Unknown user"."""
+    users = [
+        User(
+            username=f"batchlookup{i}",
+            email=f"batchlookup{i}@example.com",
+            password_hash=get_password_hash("testpassword"),
+            country_acronym="US",
+        )
+        for i in range(2)
+    ]
+    db_session.add_all(users)
+    await db_session.commit()
+    for user in users:
+        await db_session.refresh(user)
+
+    response = await client.get(
+        "/api/v2/users/lookup/",
+        params=[("ids[]", users[1].id), ("ids[]", users[0].id), ("ids[]", 999_999)],
+    )
+
+    assert response.status_code == 200
+    assert [u["id"] for u in response.json()["users"]] == [users[1].id, users[0].id]
+
+
+@pytest.mark.asyncio
+async def test_favouriting_a_beatmapset(client: AsyncClient, db_session: AsyncSession) -> None:
+    user = User(
+        username="favouriter",
+        email="favouriter@example.com",
+        password_hash=get_password_hash("testpassword"),
+        country_acronym="US",
+    )
+    beatmapset = BeatmapSet(artist="a", title="t", creator="c", status=BeatmapStatus.RANKED, favourite_count=5)
+    db_session.add_all([user, beatmapset])
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {create_token_pair(user.id, ['*']).access_token}"}
+    url = f"/api/v2/beatmapsets/{beatmapset.id}/favourites"
+
+    added = await client.post(url, data={"action": "favourite"}, headers=headers)
+    again = await client.post(url, data={"action": "favourite"}, headers=headers)  # no double counting
+    listed = await client.get("/api/v2/me/beatmapset-favourites", headers=headers)
+
+    assert added.status_code == 200 and added.json() == {"favourite_count": 6}
+    assert again.json() == {"favourite_count": 6}
+    assert listed.json() == {"beatmapset_ids": [beatmapset.id]}
+
+    removed = await client.post(url, data={"action": "unfavourite"}, headers=headers)
+    assert removed.json() == {"favourite_count": 5}
+    assert (await client.get("/api/v2/me/beatmapset-favourites", headers=headers)).json() == {"beatmapset_ids": []}
+    assert (await client.post(url, data={"action": "bogus"}, headers=headers)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_friends_list_carries_the_country_of_each_friend(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """The friends page draws a flag from country_code; a User row's country is stored as country_acronym."""
+    me = User(username="flagme", email="flagme@example.com", password_hash=get_password_hash("x"), country_acronym="US")
+    friend = User(username="flagfriend", email="flagfriend@example.com", password_hash=get_password_hash("x"),
+                  country_acronym="VN")
+    db_session.add_all([me, friend])
+    await db_session.commit()
+    db_session.add(UserRelation(user_id=me.id, target_id=friend.id, friend=True, foe=False))
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {create_token_pair(me.id, ['*']).access_token}"}
+
+    response = await client.get("/api/v2/friends", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()[0]["target"]["country_code"] == "VN"
+
+
+@pytest.mark.asyncio
 async def test_get_users_bulk_accepts_string_ids(
     client: AsyncClient,
     db_session: AsyncSession,

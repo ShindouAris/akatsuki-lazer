@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter
+from fastapi import BackgroundTasks
 from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Query
@@ -28,6 +29,7 @@ from app.models.beatmap import BeatmapStatus
 from app.models.multiplayer import MultiplayerPlaylistItem
 from app.models.score import ScoreToken
 from app.models.user import GameMode
+from app.models.user import UserBeatmapFavorite
 from app.services.beatmaps import BeatmapService
 
 router = APIRouter()
@@ -445,6 +447,38 @@ async def get_beatmapset(db: DbSession, beatmapset_id: int) -> BeatmapsetRespons
         await service.close()
 
 
+@router.post("/beatmapsets/{beatmapset_id}/favourites")
+async def set_beatmapset_favourite(
+    db: DbSession,
+    user: ActiveUser,
+    beatmapset_id: int,
+    action: str = Form(...),
+) -> dict[str, int]:
+    """Favourite or unfavourite a beatmapset (``action`` is ``favourite`` or ``unfavourite``)."""
+    action = action.strip().lower()
+    if action not in ("favourite", "unfavourite"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid action")
+
+    service = BeatmapService(db)
+    try:
+        beatmapset = await service.get_beatmapset(beatmapset_id)  # fetches it from the mirror when new
+    finally:
+        await service.close()
+    if beatmapset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Beatmapset not found")
+
+    existing = await db.get(UserBeatmapFavorite, (user.id, beatmapset_id))
+    if action == "favourite" and existing is None:
+        db.add(UserBeatmapFavorite(user_id=user.id, beatmapset_id=beatmapset_id))
+        beatmapset.favourite_count += 1
+    elif action == "unfavourite" and existing is not None:
+        await db.delete(existing)
+        beatmapset.favourite_count = max(0, beatmapset.favourite_count - 1)
+    await db.commit()
+
+    return {"favourite_count": beatmapset.favourite_count}
+
+
 @router.get("/beatmapsets/{beatmapset_id}/download")
 async def download_beatmapset(
     beatmapset_id: int,
@@ -462,6 +496,16 @@ async def download_beatmapset(
     )
 
 
+async def _prefetch_osu_file(beatmap: Beatmap) -> None:
+    service = BeatmapService()  # ensure_osu_file needs no database
+    try:
+        await service.ensure_osu_file(beatmap)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not prefetch the .osu file of beatmap %s", beatmap.id, exc_info=True)
+    finally:
+        await service.close()
+
+
 @router.post("/beatmaps/{beatmap_id}/solo/scores", response_model=ScoreTokenResponse)
 async def create_score_token(
     db: DbSession,
@@ -471,6 +515,7 @@ async def create_score_token(
     ruleset_id: int = Form(0),
     version_hash: str = Form(None),  # Client sends this but we don't use it currently
     playlist_item_id: int | None = Form(default=None, alias="playlistItemId"),
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]  # injected; None when called directly
 ) -> ScoreTokenResponse:
     """Request a score token for score submission.
 
@@ -524,6 +569,10 @@ async def create_score_token(
         )
         db.add(token)
         await db.flush()
+        # Fetch the .osu file now, while the player is in the map: otherwise the first submission of a map
+        # downloads its whole .osz before the results screen can show.
+        if background_tasks is not None:
+            background_tasks.add_task(_prefetch_osu_file, beatmap)
         return ScoreTokenResponse(
             id=token.id,
             created_at=token.created_at,
