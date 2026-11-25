@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
+    # SSL=true serves HTTPS with the two PEM files below (development CA / self-signed certs);
+    # SSL=false serves plain HTTP, for when nginx + certbot or a Cloudflare Tunnel terminates TLS.
+    ssl: bool = False
+    ssl_keyfile: str = "certs/localhost-key.pem"
+    ssl_certfile: str = "certs/localhost.pem"
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./osu.db"

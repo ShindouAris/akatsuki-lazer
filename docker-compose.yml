@@ -12,6 +12,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       PYTHONUTF8: "1"
       PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+      # app/main.py reads these: SSL=true -> HTTPS with the dev certs, SSL=false -> plain HTTP (see .env.example)
+      SSL: ${SSL:-true}
+      SSL_KEYFILE: /certs/localhost-key.pem
+      SSL_CERTFILE: /certs/localhost.pem
       USE_EXTERNAL_SPECTATOR: "true"
       SPECTATOR_INTERNAL_URL: http://spectator:8083
       USE_EXTERNAL_METADATA: "true"
@@ -26,9 +30,7 @@ services:
       - sh
       - -c
       - >-
-        alembic upgrade head &&
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
-        --ssl-keyfile /certs/localhost-key.pem --ssl-certfile /certs/localhost.pem
+        alembic upgrade head && exec python -m app.main
     ports:
       - "8000:8000"
     volumes:
@@ -36,7 +38,7 @@ services:
       - ./cert:/app/cert:ro
       - ./data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import ssl,urllib.request as u;u.urlopen(\"https://localhost:8000/\",context=ssl._create_unverified_context())"]
+      test: ["CMD", "python", "-c", "import os,ssl,urllib.request as u;s=os.environ.get('SSL','false').lower()in('1','true','yes','on');u.urlopen(('https' if s else 'http')+'://localhost:8000/',context=ssl._create_unverified_context())"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -72,6 +74,7 @@ services:
     build: ./multiplayer
     environment:
       LISTEN_ADDR: ":8081"
+      SSL: ${SSL:-true}   # false: the hub ignores the TLS settings below and speaks plain HTTP
       TLS_CERT_FILE: /certs/localhost.pem
       TLS_KEY_FILE: /certs/localhost-key.pem
       PYTHON_API_URL: https://app:8000
@@ -98,6 +101,7 @@ services:
     environment:
       LISTEN_ADDR: ":8082"
       INTERNAL_LISTEN_ADDR: ":8083"
+      SSL: ${SSL:-true}   # false: the hub ignores the TLS settings below and speaks plain HTTP
       TLS_CERT_FILE: /certs/localhost.pem
       TLS_KEY_FILE: /certs/localhost-key.pem
       PYTHON_API_URL: https://app:8000
@@ -127,6 +131,7 @@ services:
     environment:
       LISTEN_ADDR: ":8084"
       INTERNAL_LISTEN_ADDR: ":8085"
+      SSL: ${SSL:-true}   # false: the hub ignores the TLS settings below and speaks plain HTTP
       TLS_CERT_FILE: /certs/localhost.pem
       TLS_KEY_FILE: /certs/localhost-key.pem
       PYTHON_API_URL: https://app:8000

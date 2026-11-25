@@ -245,4 +245,8 @@ if __name__ == "__main__":
         port=settings.port,
         reload=settings.debug,
         log_config=LOGGING_CONFIG,
+        ssl_keyfile=settings.ssl_keyfile if settings.ssl else None,
+        ssl_certfile=settings.ssl_certfile if settings.ssl else None,
+        proxy_headers=True,  # behind nginx / Cloudflare: trust X-Forwarded-* for client IP and scheme
+        forwarded_allow_ips="*",
     )
