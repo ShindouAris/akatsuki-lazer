@@ -3,7 +3,7 @@
 A private-server backend for the osu! lazer client: a Python (FastAPI) API plus Go services for the realtime hubs
 (multiplayer, spectator, metadata). It is built to be used with the modified client
 <https://github.com/ShindouAris/osu>; an unmodified client needs extra work (see
-[Connecting an unmodified client](#connecting-an-unmodified-osu-lazer-client)).
+[Connecting an unmodified osu!lazer client](#connecting-an-unmodified-osu-lazer-client): a small endpoint patch).
 
 ```
  osu! lazer client
@@ -94,22 +94,54 @@ the hubs. Test accounts can be created through registration in the client.
 
 ## Connecting an unmodified osu!lazer client
 
-> [!WARNING]
-> This path is **not tested** and the server does not fully support it yet.
+The official client has no custom-server setting, so it needs a small source patch: point its endpoint
+configuration at this server. This works on a stock osu!lazer checkout.
 
-The official client has no custom-server setting. It only knows ppy's endpoints; `osu! --devserver` switches it to
-the development set (`https://dev.ppy.sh`, client id `5`, secret `3LP2mhUrV89xxzD1YKNndXHEhWWCRLPNKioZ9ymT`, hubs at
-`https://dev.ppy.sh/signalr/{spectator,multiplayer,metadata}`). Pointing it at this server therefore needs:
+1. Add `osu.Game/Online/LocalEndpointConfiguration.cs`:
 
-1. a **hosts-file entry** sending `dev.ppy.sh` to the machine running the server;
-2. a **TLS certificate for `dev.ppy.sh`** the client trusts (dev CA added to the trust store);
-3. `OAUTH_CLIENT_ID=5` and `OAUTH_CLIENT_SECRET=3LP2mhUrV89xxzD1YKNndXHEhWWCRLPNKioZ9ymT` in `.env`;
-4. a reverse proxy on port 443 that maps `/signalr/<hub>` to the hubs (stripping the `/signalr` prefix) and everything
-   else to the app. **This server does not serve `/signalr/*` itself**, and Cloudflare Tunnel cannot rewrite paths,
-   so use nginx for this case.
+   ```csharp
+   public class LocalEndpointConfiguration : EndpointConfiguration
+   {
+       public LocalEndpointConfiguration()
+       {
+           WebsiteUrl = APIUrl = @"http://localhost:8000";
+           APIClientSecret = @"change-me";          // OAUTH_CLIENT_SECRET from .env
+           APIClientID = "5";                        // OAUTH_CLIENT_ID
+           SpectatorUrl = "http://localhost:8000/spectator";
+           MultiplayerUrl = "http://localhost:8000/multiplayer";
+           MetadataUrl = "http://localhost:8000/metadata";
+       }
+   }
+   ```
 
-Features that rely on custom client code (queue pool picker tweaks, server-returned pp on the result screen, ...) are
-absent in an unmodified client.
+2. In `OsuGameBase.cs` make the client use it:
+
+   ```csharp
+   public virtual EndpointConfiguration CreateEndpoints() => new LocalEndpointConfiguration();
+   ```
+
+3. For plain `http://` (server running with `SSL=false`), bypass certificate checks: add an SSL bypass to the
+   `SocketsHttpHandler` in osu-framework's `WebRequest.cs`, and set `OSU_INSECURE_REQUESTS=1` when running.
+
+4. Build and run:
+
+   ```bash
+   export OSU_INSECURE_REQUESTS=1
+   dotnet build osu.Desktop.slnf
+   dotnet run --project osu.Desktop
+   ```
+
+With this setup the hubs are separate Go services, so use their ports (or one public hostname that routes the three
+paths, see [TLS and public hosting](#tls-and-public-hosting)):
+
+```csharp
+SpectatorUrl = "http://localhost:8082/spectator";
+MultiplayerUrl = "http://localhost:8081/multiplayer";
+MetadataUrl = "http://localhost:8084/metadata";
+```
+
+Features that rely on custom client code in the fork (queue pool picker tweaks, server-returned pp on the result
+screen, ...) are absent in a stock client.
 
 ## TLS and public hosting
 
