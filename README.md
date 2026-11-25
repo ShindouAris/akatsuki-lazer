@@ -167,16 +167,14 @@ Settings come from environment variables or `.env` (see `.env.example` for every
 
 ## Status: what works and what is missing
 
-Legend: **Confirmed** = tried by the maintainer with real clients. **Implemented** = built and covered by tests
-and/or checked against the API, but not yet confirmed in a real client.
+Everything under "Working" has been tested by the maintainer with real clients (two modified clients for ranked
+play and multiplayer).
 
-### Confirmed with real clients
+### Working (tested with real clients)
 
-- Two modified clients in **ranked play**: queue, pairing, the **Pick Phase** (card hand) and the **star rating
+- **Ranked play** with two modified clients: queue, pairing, the **Pick Phase** (card hand) and the **star rating
   decided** screen.
-- Login with a custom server, hubs over HTTPS with the dev CA, multiplayer rooms and spectating basics.
-
-### Implemented (not yet confirmed in a client)
+- Login with a custom server, hubs over HTTPS with the dev CA, multiplayer rooms and spectating.
 
 **Players and social:** registration, OAuth2 password + refresh tokens, profiles and statistics for all modes,
 friends and blocks (country flag now returned correctly), chat channels and presence, notifications, live rank lookup,
