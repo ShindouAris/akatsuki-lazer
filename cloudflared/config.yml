@@ -1,0 +1,21 @@
+# Cloudflare Tunnel ingress. Replace lazer.example.com with your hostname, and
+# <TUNNEL_ID> with the id printed by `cloudflared tunnel create akatsuki-lazer`.
+# Use together with docker-compose.prod.yml: the origins speak plain HTTP inside the compose network.
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # SignalR hubs: negotiate (POST) and the websocket (GET) share the path prefix.
+  - hostname: lazer.example.com
+    path: ^/multiplayer
+    service: http://multiplayer:8081
+  - hostname: lazer.example.com
+    path: ^/spectator
+    service: http://spectator:8082
+  - hostname: lazer.example.com
+    path: ^/metadata
+    service: http://metadata:8084
+  # Everything else: the Python API.
+  - hostname: lazer.example.com
+    service: http://app:8000
+  - service: http_status:404
