@@ -44,9 +44,14 @@ type pendingItem struct {
 }
 
 // Client implements room.Store and room.BeatmapLookup.
+const maxResponseBytes = 64 << 20
+
 type Client struct {
 	cfg  Config
 	http *http.Client
+
+	cardsMu    sync.Mutex
+	cardsCache map[int32]cachedCards
 
 	mu       sync.Mutex
 	rooms    map[int64]room.RoomState
@@ -343,7 +348,8 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// A pool of ten thousand cards is a couple of megabytes; anything cut short would not parse.
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		snippet := string(data)
 		if len(snippet) > 300 {

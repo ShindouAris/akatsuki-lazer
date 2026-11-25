@@ -25,6 +25,7 @@ from app.core.database import async_session_maker
 from app.core.database import close_db
 from app.seeders.base import Seeder
 from app.seeders.beatmap_seeder import BeatmapSeeder
+from app.seeders.matchmaking_discover_seeder import MatchmakingDiscoverSeeder
 from app.seeders.matchmaking_seeder import MatchmakingSeeder
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,16 @@ DEFAULT_PIPELINE: list[tuple[str, type[Seeder]]] = [
     ("matchmaking", MatchmakingSeeder),
 ]
 
+# Only on request (`python -m app.seeders matchmaking-discover matchmaking`): it downloads thousands of sets.
+OPTIONAL_SEEDERS: dict[str, type[Seeder]] = {
+    "matchmaking-discover": MatchmakingDiscoverSeeder,
+}
+
 
 def _resolve(selection: list[str]) -> list[type[Seeder]]:
     if not selection:
         return [cls for _, cls in DEFAULT_PIPELINE]
-    name_map = dict(DEFAULT_PIPELINE)
+    name_map = {**dict(DEFAULT_PIPELINE), **OPTIONAL_SEEDERS}
     chosen: list[type[Seeder]] = []
     for name in selection:
         key = name.lower()

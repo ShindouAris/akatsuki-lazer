@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"akatsuki/multiplayer/internal/matchmaking"
 	"akatsuki/multiplayer/internal/protocol"
@@ -150,6 +151,36 @@ func (c *Client) Pool(ctx context.Context, poolID int32) (*matchmaking.Pool, err
 
 // Cards implements matchmaking.Directory.
 func (c *Client) Cards(ctx context.Context, poolID int32) ([]matchmaking.Card, error) {
+	// A big pool is megabytes of JSON and a match is made every few seconds in busy times; ratings only drift
+	// slowly, so a short-lived copy is plenty fresh.
+	c.cardsMu.Lock()
+	cached, ok := c.cardsCache[poolID]
+	c.cardsMu.Unlock()
+	if ok && time.Since(cached.at) < cardsCacheTTL {
+		return cached.cards, nil
+	}
+
+	cards, err := c.loadCards(ctx, poolID)
+	if err != nil {
+		return nil, err
+	}
+	c.cardsMu.Lock()
+	if c.cardsCache == nil {
+		c.cardsCache = map[int32]cachedCards{}
+	}
+	c.cardsCache[poolID] = cachedCards{cards: cards, at: time.Now()}
+	c.cardsMu.Unlock()
+	return cards, nil
+}
+
+const cardsCacheTTL = time.Minute
+
+type cachedCards struct {
+	cards []matchmaking.Card
+	at    time.Time
+}
+
+func (c *Client) loadCards(ctx context.Context, poolID int32) ([]matchmaking.Card, error) {
 	var reply []cardJSON
 	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/internal/matchmaking/pools/%d/beatmaps", poolID), nil, &reply); err != nil {
 		return nil, err

@@ -178,22 +178,24 @@ async def test_only_ranked_cards_with_a_rating_are_dealt(client: AsyncClient, db
     ranked = await make_beatmap(db_session, "ranked", star_rating=4.0)
     unranked = {
         status: await make_beatmap(db_session, status.name, star_rating=4.0)
-        for status in (BeatmapStatus.GRAVEYARD, BeatmapStatus.WIP, BeatmapStatus.PENDING, BeatmapStatus.LOVED)
+        for status in (BeatmapStatus.GRAVEYARD, BeatmapStatus.WIP, BeatmapStatus.PENDING)
     }
     approved = await make_beatmap(db_session, "approved", star_rating=4.0)
     unrated = await make_beatmap(db_session, "unrated", star_rating=0.0)
     approved.status = BeatmapStatus.APPROVED
+    loved = await make_beatmap(db_session, "loved", star_rating=4.0)
+    loved.status = BeatmapStatus.LOVED
     for status, beatmap in unranked.items():
         beatmap.status = status
     db_session.add_all(
         MatchmakingPoolBeatmap(pool_id=pool.id, beatmap_id=b.id, mods="", rating=1000)
-        for b in (ranked, approved, unrated, *unranked.values())
+        for b in (ranked, approved, loved, unrated, *unranked.values())
     )
     await db_session.flush()
 
     response = await client.get(f"/internal/matchmaking/pools/{pool.id}/beatmaps", headers=HEADERS)
 
-    assert sorted(c["checksum"] for c in response.json()) == ["approved", "ranked"]
+    assert sorted(c["checksum"] for c in response.json()) == ["approved", "loved", "ranked"]
 
 
 async def test_pool_beatmaps_carry_their_mods_and_ratings(

@@ -27,6 +27,7 @@ from app.api.deps import DbSession
 from app.api.internal.multiplayer import require_internal_key
 from app.core.error import OsuError
 from app.models.beatmap import RANKED_STATUSES
+from app.models.beatmap import BeatmapStatus
 from app.models.beatmap import Beatmap
 from app.models.legacy import MatchmakingPool
 from app.models.legacy import MatchmakingPoolBeatmap
@@ -226,8 +227,8 @@ async def pool_beatmaps(db: DbSession, pool_id: int) -> list[PoolBeatmapOut]:
         .join(Beatmap, Beatmap.id == MatchmakingPoolBeatmap.beatmap_id)
         .where(
             MatchmakingPoolBeatmap.pool_id == pool_id,
-            # Only ranked maps are ever dealt, whatever else a pool happens to hold.
-            Beatmap.status.in_(RANKED_STATUSES),
+            # Only ranked and loved maps are ever dealt, whatever else a pool happens to hold.
+            Beatmap.status.in_((*RANKED_STATUSES, BeatmapStatus.LOVED)),
             Beatmap.difficulty_rating > 0,
         )
         .order_by(MatchmakingPoolBeatmap.id),

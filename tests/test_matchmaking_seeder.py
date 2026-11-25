@@ -17,6 +17,7 @@ from app.models.legacy import MatchmakingPoolBeatmap
 from app.seeders.matchmaking_seeder import DUEL_MODES
 from app.seeders.matchmaking_seeder import MatchmakingSeeder
 from app.seeders.matchmaking_seeder import rating_for
+from app.seeders.matchmaking_seeder import star_factor
 
 
 def _beatmap(beatmap_id: int, mode: str, star_rating: float, status: str = "ranked") -> dict:
@@ -168,18 +169,27 @@ def test_rating_formula_matches_the_spectator_server() -> None:
 
 
 def test_mods_are_stored_in_the_form_the_server_serialises_them_to() -> None:
-    assert dict(DUEL_MODES) == {
-        "1v1 Nomod": "",
-        "1v1 RX": '[{"acronym":"RX"}]',
-        "1v1 AP": '[{"acronym":"AP"}]',
-    }
+    modes = dict(DUEL_MODES)
+    assert modes["1v1 Nomod"] == ""
+    assert modes["1v1 RX"] == '[{"acronym":"RX"}]'
+    assert modes["1v1 AP"] == '[{"acronym":"AP"}]'
+    assert modes["1v1 RX HD"] == '[{"acronym":"RX"},{"acronym":"HD"}]'
+    assert len(modes) == len(DUEL_MODES)  # names are unique
+
+
+def test_dt_and_nc_cards_are_rated_by_the_stars_they_play_at() -> None:
+    from app.seeders.matchmaking_seeder import star_factor
+
+    assert star_factor("") == 1.0
+    assert star_factor(dict(DUEL_MODES)["1v1 RX HD"]) == 1.0
+    assert star_factor(dict(DUEL_MODES)["1v1 RX DT"]) == star_factor(dict(DUEL_MODES)["1v1 RX NC"]) == 1.4
 
 
 async def test_creates_one_ranked_play_pool_per_mode(db_session: AsyncSession, make_seeder) -> None:
     await make_seeder("1").run(db_session)
 
     pools = await _pools(db_session)
-    assert set(pools) == {"1v1 Nomod", "1v1 RX", "1v1 AP"}
+    assert set(pools) == {name for name, _ in DUEL_MODES}
     for pool in pools.values():
         assert pool.type == "ranked_play"
         assert pool.ruleset_id == 0
@@ -201,8 +211,9 @@ async def test_every_pool_gets_every_osu_map_with_its_own_mods(
         # 13 is a taiko map: Relax/Autopilot only exist for osu!standard, so it is never a card.
         assert set(cards) == {11, 12, 21}
         assert {card.mods for card in cards.values()} == {expected_mods[name]}
-        assert cards[11].rating == rating_for(2.5)
-        assert cards[21].rating == rating_for(6.0)
+        factor = star_factor(expected_mods[name])
+        assert cards[11].rating == rating_for(2.5 * factor)
+        assert cards[21].rating == rating_for(6.0 * factor)
         assert all(card.selection_count == 0 for card in cards.values())
 
 
@@ -217,8 +228,8 @@ async def test_only_ranked_maps_are_cards(db_session: AsyncSession, make_seeder)
     await make_seeder("4").run(db_session)
 
     for pool in (await _pools(db_session)).values():
-        # Ranked and approved count as ranked; graveyard, pending, wip and loved do not.
-        assert set(await _cards(db_session, pool.id)) == {45, 46}
+        # Ranked, approved and loved are cards; graveyard, pending and wip are not.
+        assert set(await _cards(db_session, pool.id)) == {44, 45, 46}
 
 
 async def test_cards_come_from_every_ranked_map_in_the_database_not_only_the_listed_sets(
@@ -236,7 +247,7 @@ async def test_cards_come_from_every_ranked_map_in_the_database_not_only_the_lis
 async def test_unranked_cards_left_by_earlier_runs_are_removed(db_session: AsyncSession, make_seeder) -> None:
     await make_seeder("4").run(db_session)
     pool = next(iter((await _pools(db_session)).values()))
-    for beatmap_id in (41, 44):  # a graveyard and a loved map, as an older seeder would have added them
+    for beatmap_id in (41, 42):  # a graveyard and another unranked map, as an older seeder would have added them
         db_session.add(
             MatchmakingPoolBeatmap(
                 pool_id=pool.id, beatmap_id=beatmap_id, mods="", rating=1000, selection_count=0
@@ -246,7 +257,7 @@ async def test_unranked_cards_left_by_earlier_runs_are_removed(db_session: Async
 
     await make_seeder("4").run(db_session)
 
-    assert set(await _cards(db_session, pool.id)) == {45, 46}
+    assert set(await _cards(db_session, pool.id)) == {44, 45, 46}
 
 
 async def test_beatmaps_are_cached_with_their_real_checksums(
@@ -278,7 +289,7 @@ async def test_running_twice_changes_nothing_and_keeps_learned_ratings(
     await make_seeder("1").run(db_session)
     await db_session.commit()
 
-    assert len(await _pools(db_session)) == 3
+    assert len(await _pools(db_session)) == len(DUEL_MODES)
     for pool in (await _pools(db_session)).values():
         assert await _card_count(db_session, pool.id) == 2
     refreshed = (await _cards(db_session, pools["1v1 RX"].id))[11]

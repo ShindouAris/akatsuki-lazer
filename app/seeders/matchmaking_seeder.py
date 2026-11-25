@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.beatmap import Beatmap
 from app.models.beatmap import BeatmapSet
 from app.models.beatmap import RANKED_STATUSES
+from app.models.beatmap import BeatmapStatus
 from app.models.legacy import MatchmakingPool
 from app.models.legacy import MatchmakingPoolBeatmap
 from app.models.user import GameMode
@@ -50,8 +51,8 @@ DEFAULT_METADATA_URL = "https://mirror.nekoha.moe/api"
 POOL_TYPE = "ranked_play"
 OSU_RULESET_ID = 0
 
-# Only ranked maps are cards.
-CARD_STATUSES = RANKED_STATUSES
+# Ranked and loved maps are cards (loved maps award no pp, but are fine to duel on).
+CARD_STATUSES = (*RANKED_STATUSES, BeatmapStatus.LOVED)
 LOBBY_SIZE = 2
 
 # Ranked queue matching: the search radius starts at 200 rating points and doubles every 30 seconds.
@@ -77,7 +78,29 @@ DUEL_MODES: tuple[tuple[str, str], ...] = (
     ("1v1 Nomod", _mods()),
     ("1v1 RX", _mods("RX")),
     ("1v1 AP", _mods("AP")),
+    ("1v1 HD", _mods("HD")),
+    ("1v1 HR", _mods("HR")),
+    ("1v1 DT", _mods("DT")),
+    ("1v1 NC", _mods("NC")),
+    ("1v1 RX HD", _mods("RX", "HD")),
+    ("1v1 RX HR", _mods("RX", "HR")),
+    ("1v1 RX DT", _mods("RX", "DT")),
+    ("1v1 RX NC", _mods("RX", "NC")),
+    ("1v1 RX HDDT", _mods("RX", "HD", "DT")),
+    ("1v1 AP HD", _mods("AP", "HD")),
+    ("1v1 AP DT", _mods("AP", "DT")),
 )
+
+# Roughly how much a mod raises a map's star rating. The cards of a modded pool start rated by the stars they play
+# at; the ratings then follow the results of the matches like any other (the server's own ratings adjust too).
+STAR_FACTORS = {"DT": 1.4, "NC": 1.4, "HR": 1.08}
+
+
+def star_factor(mods: str) -> float:
+    factor = 1.0
+    for mod in json.loads(mods) if mods else []:
+        factor *= STAR_FACTORS.get(mod["acronym"], 1.0)
+    return factor
 
 
 def rating_for(star_rating: float) -> int:
@@ -272,6 +295,7 @@ class MatchmakingSeeder(Seeder):
         )
         existing = set(result.scalars().all())
 
+        factor = star_factor(mods)
         added = 0
         for beatmap in beatmaps:
             if beatmap.id in existing:
@@ -281,7 +305,7 @@ class MatchmakingSeeder(Seeder):
                     pool_id=pool.id,
                     beatmap_id=beatmap.id,
                     mods=mods,
-                    rating=rating_for(beatmap.difficulty_rating),
+                    rating=rating_for(beatmap.difficulty_rating * factor),
                     selection_count=0,
                 ),
             )
