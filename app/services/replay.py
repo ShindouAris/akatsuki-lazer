@@ -1,7 +1,8 @@
-"""Replay persistence service for streamed spectator frame bundles."""
+﻿"""Replay persistence service for streamed spectator frame bundles."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import lzma
 import logging
@@ -54,8 +55,12 @@ class ReplayStorageService:
         if not frame_bundles:
             return None
 
-        replay_data = _build_replay_data_string(frame_bundles)
-        replay_payload = lzma.compress(replay_data.encode("utf-8"), format=lzma.FORMAT_ALONE)
+        def build() -> tuple[str, bytes]:
+            data = _build_replay_data_string(frame_bundles)
+            return data, lzma.compress(data.encode("utf-8"), format=lzma.FORMAT_ALONE)
+
+        # CPU bound: off the event loop.
+        replay_data, replay_payload = await asyncio.to_thread(build)
 
         n300 = _pick_stat(statistics, "great", "count_300", "count300")
         n100 = _pick_stat(statistics, "ok", "count_100", "count100")

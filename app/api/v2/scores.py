@@ -1,5 +1,6 @@
-"""Score endpoints."""
+﻿"""Score endpoints."""
 
+import asyncio
 import json
 import logging
 from datetime import UTC
@@ -447,7 +448,9 @@ async def submit_score(
     if pp_eligible and osu_file_path:
         try:
             pp_service = PPService()
-            pp_result = pp_service.calculate_for_score(
+            # CPU bound: in a thread, so it does not stall the event loop (and every other request) meanwhile.
+            pp_result = await asyncio.to_thread(
+                pp_service.calculate_for_score,
                 osu_file_path,
                 {
                     "ruleset_id": token.ruleset_id,
@@ -461,10 +464,6 @@ async def submit_score(
             result_pp = pp_result.get("pp")
             if isinstance(result_pp, float):
                 calculated_pp = result_pp
-            # The star rating with the play's mods, for the skill medals (see app.services.medals).
-            result_stars = pp_result.get("stars")
-            if isinstance(result_stars, float) and result_stars > 0:
-                data["star_rating"] = result_stars
             # The star rating with the play's mods, for the skill medals (see app.services.medals).
             result_stars = pp_result.get("stars")
             if isinstance(result_stars, float) and result_stars > 0:
