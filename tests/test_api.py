@@ -263,8 +263,14 @@ async def test_favouriting_a_beatmapset(client: AsyncClient, db_session: AsyncSe
     assert again.json() == {"favourite_count": 6}
     assert listed.json() == {"beatmapset_ids": [beatmapset.id]}
 
+    # The set's own JSON tells the client whether the heart is filled: per user, and false when signed out.
+    set_url = f"/api/v2/beatmapsets/{beatmapset.id}"
+    assert (await client.get(set_url, headers=headers)).json()["has_favourited"] is True
+    assert (await client.get(set_url)).json()["has_favourited"] is False
+
     removed = await client.post(url, data={"action": "unfavourite"}, headers=headers)
     assert removed.json() == {"favourite_count": 5}
+    assert (await client.get(set_url, headers=headers)).json()["has_favourited"] is False
     assert (await client.get("/api/v2/me/beatmapset-favourites", headers=headers)).json() == {"beatmapset_ids": []}
     assert (await client.post(url, data={"action": "bogus"}, headers=headers)).status_code == 422
 
@@ -416,10 +422,12 @@ async def test_add_friend_success(
     )
 
     assert response.status_code == 200
-    data = response.json()
+    # Like osu-web, the relation is wrapped in "user_relation" (the client's AddFriendResponse reads that key).
+    data = response.json()["user_relation"]
     assert data["target_id"] == target_user.id
     assert data["relation_type"] == "friend"
     assert data["target"]["id"] == target_user.id
+    assert data["target"]["country_code"] == "JP"
 
     relation = await db_session.get(UserRelation, (current_user.id, target_user.id))
     assert relation is not None

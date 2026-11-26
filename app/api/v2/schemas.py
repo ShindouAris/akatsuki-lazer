@@ -193,6 +193,8 @@ class BeatmapsetCompact(BaseModel):
     status: str = "pending"
     play_count: int = 0
     favourite_count: int = 0
+    # Whether the requesting user favourited the set (the favourite button's state); False when signed out.
+    has_favourited: bool = False
     # Artwork URLs the client loads for cards/backgrounds; derived from the id unless given.
     covers: dict[str, str] | None = None
 

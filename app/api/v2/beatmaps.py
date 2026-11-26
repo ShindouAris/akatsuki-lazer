@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import ActiveUser
 from app.api.deps import DbSession
+from app.api.deps import OptionalUser
 from app.api.v2.schemas import BeatmapCompact
 from app.api.v2.schemas import GetBeatmapsResponse
 from app.api.v2.schemas import BeatmapResponse
@@ -397,9 +398,19 @@ async def search_beatmapsets(
     # Use API-based search (mirror service)
     return await _search_beatmapsets_api(db, q, m, s, sort, cursor_string)
 
+async def _with_has_favourited(
+    response: BeatmapsetResponse, db: DbSession, user: OptionalUser,
+) -> BeatmapsetResponse:
+    """Fill ``has_favourited`` for the signed-in user (the client's favourite button reads it)."""
+    if user is not None:
+        response.has_favourited = await db.get(UserBeatmapFavorite, (user.id, response.id)) is not None
+    return response
+
+
 @router.get("/beatmapsets/lookup", response_model=BeatmapsetResponse)
 async def lookup_beatmapset(
     db: DbSession,
+    user: OptionalUser,
     beatmap_id: int = Query(...),
 ) -> BeatmapsetResponse:
     """Lookup a beatmapset by beatmap ID."""
@@ -420,13 +431,13 @@ async def lookup_beatmapset(
                 detail="Beatmapset not found",
             )
 
-        return _beatmapset_to_response(beatmapset)
+        return await _with_has_favourited(_beatmapset_to_response(beatmapset), db, user)
     finally:
         await service.close()
 
 
 @router.get("/beatmapsets/{beatmapset_id}", response_model=BeatmapsetResponse)
-async def get_beatmapset(db: DbSession, beatmapset_id: int) -> BeatmapsetResponse:
+async def get_beatmapset(db: DbSession, user: OptionalUser, beatmapset_id: int) -> BeatmapsetResponse:
     """Get a beatmapset by ID.
 
     Checks local database first, then fetches from mirror if not found.
@@ -442,7 +453,7 @@ async def get_beatmapset(db: DbSession, beatmapset_id: int) -> BeatmapsetRespons
                 detail="Beatmapset not found",
             )
 
-        return _beatmapset_to_response(beatmapset)
+        return await _with_has_favourited(_beatmapset_to_response(beatmapset), db, user)
     finally:
         await service.close()
 
