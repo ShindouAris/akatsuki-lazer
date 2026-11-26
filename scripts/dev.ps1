@@ -10,7 +10,7 @@ $env:PYTHONUTF8 = "1"   # the log has emoji; the default Windows code page canno
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $py = Join-Path $root ".venv\Scripts\python.exe"
-$compose = @("compose", "-f", "docker-compose.yml", "-f", "docker-compose.dev.yml")
+$compose = @("compose", "-f", "docker-compose.yml")
 
 function Get-EnvValue([string]$name) {
     foreach ($line in Get-Content (Join-Path $root ".env")) {

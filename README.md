@@ -215,7 +215,9 @@ rank history, batch user lookup (no more "Unknown user"), own flag/avatar/cover 
 **Beatmaps and scores:** lookup by id/checksum/filename, beatmapset search (the "Has Leaderboard" filter lists only
 ranked, approved and loved maps), download from a mirror or the official API, cover images, score tokens and
 submission, score and replay download (replay frames from the Go spectator are decoded), PP calculation, beatmap
-leaderboards, **favouriting beatmapsets** (`POST/DELETE` favourites, `GET /me/beatmapset-favourites`).
+leaderboards, **favouriting beatmapsets** (`POST /beatmapsets/{id}/favourites`, `GET /me/beatmapset-favourites`, and
+`has_favourited` on the set). A beatmapset archive that comes back empty or is not a zip is never stored: the next
+mirror is tried and a damaged cached copy is downloaded again.
 
 **Boards (nomod / Relax / Autopilot):** a play goes to exactly one board by its mods (**RX** -> Relax in osu!,
 taiko and catch; **AP** -> Autopilot in osu! only; anything else -> vanilla). Each board has its own leaderboard,
@@ -251,11 +253,10 @@ curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://localhost:8000/api/v
 
 - Forums, comments, beatmap discussions, news, wiki, score pins, spotlights, site teams.
 - Scoring per team in team versus results; free-style rooms.
-- `has_favourited` is not part of the beatmapset JSON, so the client's favourite button does not show the current state.
+- `has_favourited` is filled only on `GET /beatmapsets/{id}` and `/beatmapsets/lookup`, not on search results.
 - With 14 queue modes, matches are spread thin; trim `DUEL_MODES` if the queue is rarely filled.
 - The unmodified-client patch and an nginx + certbot deployment (see above) are untested.
 - Real-client testing is manual: expect rough edges when two clients play ranked play.
-- Two tests fail from before this work: `tests/test_api.py::test_add_friend_success` and `::test_get_user_score_rank`.
 
 ## Where replays and beatmaps are stored
 
