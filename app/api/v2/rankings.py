@@ -41,14 +41,14 @@ def _string_to_mode(mode: str) -> GameMode | None:
     }.get(mode.lower())
 
 
-def _mode_to_string(mode: GameMode) -> str:
-    """Convert GameMode enum to string."""
+def _mode_to_int(mode: GameMode) -> int:
+    """Convert GameMode enum to the ruleset id BeatmapCompact carries (osu 0, taiko 1, catch 2, mania 3)."""
     return {
-        GameMode.OSU: "osu",
-        GameMode.TAIKO: "taiko",
-        GameMode.CATCH: "fruits",
-        GameMode.MANIA: "mania",
-    }.get(mode, "osu")
+        GameMode.OSU: 0,
+        GameMode.TAIKO: 1,
+        GameMode.CATCH: 2,
+        GameMode.MANIA: 3,
+    }.get(mode, 0)
 
 
 def _score_to_response(score: Score, rank_global: int | None = None) -> ScoreResponse:
@@ -76,7 +76,8 @@ def _score_to_response(score: Score, rank_global: int | None = None) -> ScoreRes
             id=score.beatmap.id,
             beatmapset_id=score.beatmap.beatmapset_id,
             version=score.beatmap.version,
-            mode=_mode_to_string(score.beatmap.mode),
+            mode=_mode_to_int(score.beatmap.mode),
+            mode_int=_mode_to_int(score.beatmap.mode),
             status=score.beatmap.status.name.lower(),
             difficulty_rating=score.beatmap.difficulty_rating,
             total_length=score.beatmap.total_length,
