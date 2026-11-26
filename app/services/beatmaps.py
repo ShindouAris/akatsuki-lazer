@@ -242,7 +242,15 @@ class BeatmapService:
             return str(osu_file_path)
 
         osz_file_path = osz_dir / f"{beatmap.beatmapset_id}.osz"
-        if not osz_file_path.exists() and not await storage.download_to(osz_key(beatmap.beatmapset_id), osz_file_path):
+        # An archive from an earlier run may be empty or damaged: it is dropped and fetched again, never trusted.
+        if osz_file_path.exists() and not zipfile.is_zipfile(osz_file_path):
+            osz_file_path.unlink()
+        have_osz = osz_file_path.exists() or await storage.download_to(osz_key(beatmap.beatmapset_id), osz_file_path)
+        if have_osz and not zipfile.is_zipfile(osz_file_path):
+            logger.warning("Stored archive of beatmapset %s is not a zip file, downloading it again", beatmap.beatmapset_id)
+            osz_file_path.unlink(missing_ok=True)
+            have_osz = False
+        if not have_osz:
             try:
                 with osz_file_path.open("wb") as osz_file:
                     async for chunk in self.download_beatmapset(beatmap.beatmapset_id):
@@ -254,6 +262,10 @@ class BeatmapService:
                     beatmap.beatmapset_id,
                     exc,
                 )
+                return None
+            if not zipfile.is_zipfile(osz_file_path):
+                osz_file_path.unlink(missing_ok=True)  # do not store (or cache) what is not an archive
+                logger.error("Downloaded archive of beatmapset %s is not a zip file", beatmap.beatmapset_id)
                 return None
             await self._store(osz_key(beatmap.beatmapset_id), osz_file_path)
 
@@ -312,10 +324,19 @@ class BeatmapService:
                             )
                             continue
 
+                        bad: str | None = None
                         async for chunk in response.aiter_bytes(chunk_size=8192):
+                            if not started and not chunk.startswith(b"PK"):
+                                bad = "not a zip archive"  # e.g. an HTML error page served with 200 OK
+                                break
                             started = True
                             yield chunk
-                        return
+                        if started:
+                            return
+                        # Nothing usable came back (empty body, or not an archive): try the next mirror.
+                        bad = bad or "empty response"
+                        failures.append(f"{name}: {bad}")
+                        logger.warning("Download of beatmapset %s from %s failed: %s", beatmapset_id, name, bad)
                 except httpx.HTTPError as e:
                     if started:
                         raise
