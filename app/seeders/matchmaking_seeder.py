@@ -75,18 +75,9 @@ def _mods(*acronyms: str) -> str:
 
 # (pool name, required mods of every card in the pool)
 DUEL_MODES: tuple[tuple[str, str], ...] = (
-    ("1v1 Nomod", _mods()),
-    ("1v1 RX", _mods("RX")),
-    ("1v1 AP", _mods("AP")),
     ("1v1 HD", _mods("HD")),
-    ("1v1 HR", _mods("HR")),
-    ("1v1 DT", _mods("DT")),
-    ("1v1 NC", _mods("NC")),
     ("1v1 RX HD", _mods("RX", "HD")),
-    ("1v1 RX HR", _mods("RX", "HR")),
-    ("1v1 RX DT", _mods("RX", "DT")),
     ("1v1 RX NC", _mods("RX", "NC")),
-    ("1v1 RX HDDT", _mods("RX", "HD", "DT")),
     ("1v1 AP HD", _mods("AP", "HD")),
     ("1v1 AP DT", _mods("AP", "DT")),
 )
@@ -149,6 +140,8 @@ class MatchmakingSeeder(Seeder):
                 f"pool '{pool_name}' (id {pool.id}): {added} new card(s), {removed} unranked card(s) removed, "
                 f"{len(beatmaps)} map(s) in total",
             )
+
+        await self._deactivate_retired_pools(session)
 
         if len(beatmaps) < MIN_CARDS_FOR_TWO_HANDS:
             self.warn(
@@ -242,6 +235,28 @@ class MatchmakingSeeder(Seeder):
             await session.delete(card)
         await session.flush()
         return len(stale)
+
+    async def _deactivate_retired_pools(self, session: AsyncSession) -> None:
+        """Take the "1v1 ..." pools that are no longer in DUEL_MODES out of the queue.
+
+        They are deactivated, not deleted, so their cards, ratings and match history stay. Pools with other names
+        (made by hand) are not touched.
+        """
+        wanted = {name for name, _ in DUEL_MODES}
+        result = await session.execute(
+            select(MatchmakingPool).where(
+                MatchmakingPool.type == POOL_TYPE,
+                MatchmakingPool.ruleset_id == OSU_RULESET_ID,
+                MatchmakingPool.variant_id == 0,
+                MatchmakingPool.active.is_(True),
+                MatchmakingPool.name.like("1v1 %"),
+            ),
+        )
+        for pool in result.scalars().all():
+            if pool.name not in wanted:
+                pool.active = False
+                self.info(f"pool '{pool.name}' (id {pool.id}) is no longer a mode: deactivated")
+        await session.flush()
 
     async def _ensure_pool(self, session: AsyncSession, name: str) -> MatchmakingPool:
         result = await session.execute(

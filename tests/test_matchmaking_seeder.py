@@ -1,4 +1,4 @@
-"""Tests for the Duel pool seeder."""
+﻿"""Tests for the Duel pool seeder."""
 
 import subprocess
 import sys
@@ -170,9 +170,7 @@ def test_rating_formula_matches_the_spectator_server() -> None:
 
 def test_mods_are_stored_in_the_form_the_server_serialises_them_to() -> None:
     modes = dict(DUEL_MODES)
-    assert modes["1v1 Nomod"] == ""
-    assert modes["1v1 RX"] == '[{"acronym":"RX"}]'
-    assert modes["1v1 AP"] == '[{"acronym":"AP"}]'
+    assert modes["1v1 HD"] == '[{"acronym":"HD"}]'
     assert modes["1v1 RX HD"] == '[{"acronym":"RX"},{"acronym":"HD"}]'
     assert len(modes) == len(DUEL_MODES)  # names are unique
 
@@ -182,7 +180,7 @@ def test_dt_and_nc_cards_are_rated_by_the_stars_they_play_at() -> None:
 
     assert star_factor("") == 1.0
     assert star_factor(dict(DUEL_MODES)["1v1 RX HD"]) == 1.0
-    assert star_factor(dict(DUEL_MODES)["1v1 RX DT"]) == star_factor(dict(DUEL_MODES)["1v1 RX NC"]) == 1.4
+    assert star_factor(dict(DUEL_MODES)["1v1 AP DT"]) == star_factor(dict(DUEL_MODES)["1v1 RX NC"]) == 1.4
 
 
 async def test_creates_one_ranked_play_pool_per_mode(db_session: AsyncSession, make_seeder) -> None:
@@ -280,7 +278,7 @@ async def test_running_twice_changes_nothing_and_keeps_learned_ratings(
     await db_session.commit()
 
     pools = await _pools(db_session)
-    card = (await _cards(db_session, pools["1v1 RX"].id))[11]
+    card = (await _cards(db_session, pools["1v1 RX HD"].id))[11]
     card.rating = 1  # as if the server had learned a rating for it
     card.selection_count = 7
     await db_session.commit()
@@ -292,7 +290,7 @@ async def test_running_twice_changes_nothing_and_keeps_learned_ratings(
     assert len(await _pools(db_session)) == len(DUEL_MODES)
     for pool in (await _pools(db_session)).values():
         assert await _card_count(db_session, pool.id) == 2
-    refreshed = (await _cards(db_session, pools["1v1 RX"].id))[11]
+    refreshed = (await _cards(db_session, pools["1v1 RX HD"].id))[11]
     assert (refreshed.rating, refreshed.selection_count) == (1, 7)
     assert len(mirror.requested) == requests_after_first_run, (
         "cached sets must not be fetched again"
@@ -310,19 +308,27 @@ async def test_adding_a_set_later_only_adds_its_cards(
         assert await _card_count(db_session, pool.id) == 3
 
 
-async def test_nomod_pool_does_not_duplicate_cards_stored_with_null_mods(
+async def test_pools_that_are_no_longer_modes_leave_the_queue_but_keep_their_data(
     db_session: AsyncSession,
     make_seeder,
 ) -> None:
-    await make_seeder("1").run(db_session)
-    nomod = (await _pools(db_session))["1v1 Nomod"]
-    (await _cards(db_session, nomod.id))[11].mods = None
+    old = MatchmakingPool(
+        ruleset_id=0, variant_id=0, name="1v1 Nomod", type="ranked_play", active=True,
+        lobby_size=2, rating_search_radius=200, rating_search_radius_max=9999, rating_search_radius_exp=30,
+    )
+    custom = MatchmakingPool(
+        ruleset_id=0, variant_id=0, name="Friday cup", type="ranked_play", active=True,
+        lobby_size=2, rating_search_radius=200, rating_search_radius_max=9999, rating_search_radius_exp=30,
+    )
+    db_session.add_all([old, custom])
     await db_session.flush()
 
     await make_seeder("1").run(db_session)
 
-    assert await _card_count(db_session, nomod.id) == 2
-
+    pools = await _pools(db_session)
+    assert pools["1v1 Nomod"].active is False  # retired mode: out of the queue, row kept
+    assert pools["Friday cup"].active is True  # not a "1v1 ..." pool: left alone
+    assert all(pools[name].active for name, _ in DUEL_MODES)
 
 async def test_unknown_sets_are_skipped_without_failing_the_rest(
     db_session: AsyncSession,
@@ -340,3 +346,4 @@ async def test_empty_set_list_seeds_nothing(db_session: AsyncSession, make_seede
     await make_seeder("# only a comment", "").run(db_session)
 
     assert await _pools(db_session) == {}
+

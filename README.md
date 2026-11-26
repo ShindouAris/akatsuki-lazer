@@ -236,9 +236,9 @@ updates; the Python app forwards to it through the internal API.
 kick, host transfer, invitations), head-to-head and team versus, start timers, room scores and leaderboards.
 
 **Ranked play and matchmaking:** OpenSkill-rated pairing, duels, card hands, discard/play stages and damage rules.
-About 10,000 ranked and loved maps seeded as cards, **14 pools** (nomod, RX, AP and mod combinations such as RX HD,
-RX DT, RX NC; see `DUEL_MODES` in `app/seeders/matchmaking_seeder.py`). Pool cards are cached in the Go service for a
-minute. The result screen after a ranked match is faster (beatmap prefetch, PP and replay work off the event loop).
+About 10,000 ranked and loved maps seeded as cards, **5 modes**: HD, RX HD, RX NC, AP HD and AP DT (edit `DUEL_MODES`
+in `app/seeders/matchmaking_seeder.py` and re-run the seeder to change them; a mode that is removed is deactivated, not
+deleted, so its ratings and history stay). Pool cards are cached in the Go service for a minute. The result screen after a ranked match is faster (beatmap prefetch, PP and replay work off the event loop).
 
 **Own flag, avatar and cover** (the client has no screen for this; `-k` skips the dev certificate check):
 
@@ -254,7 +254,6 @@ curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://localhost:8000/api/v
 - Forums, comments, beatmap discussions, news, wiki, score pins, spotlights, site teams.
 - Scoring per team in team versus results; free-style rooms.
 - `has_favourited` is filled only on `GET /beatmapsets/{id}` and `/beatmapsets/lookup`, not on search results.
-- With 14 queue modes, matches are spread thin; trim `DUEL_MODES` if the queue is rarely filled.
 - The unmodified-client patch and an nginx + certbot deployment (see above) are untested.
 - Real-client testing is manual: expect rough edges when two clients play ranked play.
 
