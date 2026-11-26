@@ -171,8 +171,8 @@ docker compose --profile tunnel up -d --build
 `proxy_read_timeout 3600s`. Do not publish ports 8081-8085 to the internet (8083/8085 are the internal APIs).
 
 > [!NOTE]
-> The Docker setup, both `SSL` modes and plain-HTTP hubs were verified to boot. A real tunnel or nginx in front of
-> real clients has not been tested yet.
+> Both `SSL` modes and plain-HTTP hubs boot, and the Cloudflare Tunnel setup has been tested with a real client.
+> nginx + certbot follows the same plain-HTTP setup but has not been tried.
 
 ## Configuration
 
@@ -253,7 +253,7 @@ curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://localhost:8000/api/v
 - Scoring per team in team versus results; free-style rooms.
 - `has_favourited` is not part of the beatmapset JSON, so the client's favourite button does not show the current state.
 - With 14 queue modes, matches are spread thin; trim `DUEL_MODES` if the queue is rarely filled.
-- Unmodified-client support and a real-world tunnel/nginx deployment (see above) are untested.
+- The unmodified-client patch and an nginx + certbot deployment (see above) are untested.
 - Real-client testing is manual: expect rough edges when two clients play ranked play.
 - Two tests fail from before this work: `tests/test_api.py::test_add_friend_success` and `::test_get_user_score_rank`.
 

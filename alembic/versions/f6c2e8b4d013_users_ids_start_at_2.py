@@ -1,4 +1,4 @@
-"""user ids start at 2
+﻿"""user ids start at 2
 
 The osu! client treats a user with ``Id <= 1`` as "not a real player" (id 0 is the system user): it never loads the
 local user's statistics and the avatar / name stop opening the profile. ppy's own ids start at 2 for the same reason.
@@ -24,11 +24,19 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return  # SQLite (tests) has no sequences
-    op.execute("ALTER SEQUENCE users_id_seq MINVALUE 2 START WITH 2")
-    # Move the sequence only when it would still hand out id 1 (a fresh database); never backwards.
+    # Fresh database (the sequence has not gone past 1): restart it at 2. Otherwise keep its position and only
+    # raise the floor, so existing ids are never reused.
     op.execute(
-        "SELECT setval('users_id_seq', 2, false) "
-        "WHERE NOT (SELECT is_called FROM users_id_seq) AND (SELECT last_value FROM users_id_seq) < 2"
+        """
+        DO $$
+        BEGIN
+            IF (SELECT last_value FROM users_id_seq) < 2 THEN
+                ALTER SEQUENCE users_id_seq MINVALUE 2 START WITH 2 RESTART WITH 2;
+            ELSE
+                ALTER SEQUENCE users_id_seq MINVALUE 2 START WITH 2;
+            END IF;
+        END $$;
+        """
     )
 
 
@@ -36,3 +44,4 @@ def downgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
     op.execute("ALTER SEQUENCE users_id_seq MINVALUE 1 START WITH 1")
+
